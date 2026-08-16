@@ -1,14 +1,14 @@
+import structlog
 from fastapi import APIRouter, Depends
 from app.schemas.repos import RepoListResponse
-import logging
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 router = APIRouter()
 
 
 async def log_request():
-    logger.info("request received")
+    logger.info("repos_request_received")
 
 
 @router.get("/repos", response_model=RepoListResponse)
