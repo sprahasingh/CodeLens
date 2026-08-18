@@ -2,3 +2,8 @@ fastapi
 uvicorn
 pydantic-settings
 structlog
+sqlalchemy
+alembic
+asyncpg
+psycopg2-binary
+greenlet
