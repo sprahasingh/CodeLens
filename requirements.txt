@@ -7,3 +7,6 @@ alembic
 asyncpg
 psycopg2-binary
 greenlet
+PyJWT
+cryptography
+httpx
