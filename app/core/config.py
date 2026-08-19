@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     github_app_id: int
     github_private_key_path: str
     github_installation_id: int
+    redis_url: str
 
     class Config:
         env_file = ".env"

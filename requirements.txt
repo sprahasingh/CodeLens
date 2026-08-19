@@ -10,3 +10,6 @@ greenlet
 PyJWT
 cryptography
 httpx
+celery
+flower
+redis
