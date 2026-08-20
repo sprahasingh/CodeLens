@@ -10,9 +10,11 @@ class Settings(BaseSettings):
     github_private_key_path: str
     github_installation_id: int
     redis_url: str
+    voyage_api_key: str
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

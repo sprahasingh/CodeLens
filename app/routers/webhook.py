@@ -1,6 +1,7 @@
 import structlog
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, BackgroundTasks
 from app.tasks.pr_tasks import process_pr
+from app.services.ingestion import ingest_repository
 
 logger = structlog.get_logger()
 
@@ -11,7 +12,6 @@ router = APIRouter()
 async def handle_webhook(request: Request):
     event = request.headers.get("X-GitHub-Event")
     payload = await request.json()
-
     logger.info("webhook_received", event=event)
 
     if event == "ping":
@@ -28,3 +28,10 @@ async def handle_webhook(request: Request):
             return {"status": "queued"}
 
     return {"status": "ignored"}
+
+
+@router.post("/ingest/{owner}/{repo}")
+async def trigger_ingestion(owner: str, repo: str, background_tasks: BackgroundTasks):
+    background_tasks.add_task(ingest_repository, owner, repo)
+    logger.info("ingestion_triggered", owner=owner, repo=repo)
+    return {"status": "ingestion started", "owner": owner, "repo": repo}
