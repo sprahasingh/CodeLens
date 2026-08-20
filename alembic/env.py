@@ -6,6 +6,7 @@ from alembic import context
 from app.core.config import settings
 from app.core.database import Base
 import app.models.repository
+import app.models.review_comment
 
 config = context.config
 fileConfig(config.config_file_name)
