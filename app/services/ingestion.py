@@ -37,7 +37,7 @@ async def ingest_repository(owner: str, repo: str) -> dict:
                     github_comment_id=comment["id"],
                     repo_owner=owner,
                     repo_name=repo,
-                    pr_number=comment["pull_request_url"].split("/")[-1],
+                    pr_number=int(comment["pull_request_url"].split("/")[-1]),
                     path=comment["path"],
                     line=comment.get("line") or comment.get("original_line"),
                     diff_hunk=comment["diff_hunk"],

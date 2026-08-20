@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, Integer, Text, Float
+from sqlalchemy import String, DateTime, BigInteger, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 from app.core.database import Base
@@ -14,7 +14,7 @@ class ReviewComment(Base):
         String, primary_key=True,
         default=lambda: str(uuid.uuid4())
     )
-    github_comment_id: Mapped[int] = mapped_column(Integer, unique=True)
+    github_comment_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     repo_owner: Mapped[str] = mapped_column(String(255))
     repo_name: Mapped[str] = mapped_column(String(255))
     pr_number: Mapped[int] = mapped_column(Integer)
