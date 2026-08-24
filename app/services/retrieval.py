@@ -20,6 +20,7 @@ async def find_similar_comments(
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
     async with AsyncSessionLocal() as session:
+        await session.execute(text("SET hnsw.ef_search = 40"))
         result = await session.execute(
             text("""
                 SELECT
