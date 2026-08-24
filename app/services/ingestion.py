@@ -69,3 +69,38 @@ async def ingest_repository(owner: str, repo: str) -> dict:
         skipped=skipped
     )
     return {"ingested": ingested, "skipped": skipped}
+
+
+async def find_similar_comments(hunk: str, limit: int = 5) -> list:
+    from app.services.embedder import embed_single
+    from sqlalchemy import text
+    
+    query_vector = embed_single(hunk)
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT id, path, line, diff_hunk, body, author,
+                       1 - (embedding <=> :query_vector) as similarity
+                FROM review_comments
+                ORDER BY embedding <=> :query_vector
+                LIMIT :limit
+            """),
+            {
+                "query_vector": str(query_vector),
+                "limit": limit
+            }
+        )
+        rows = result.fetchall()
+    
+    return [
+        {
+            "path": row.path,
+            "line": row.line,
+            "diff_hunk": row.diff_hunk,
+            "body": row.body,
+            "author": row.author,
+            "similarity": row.similarity
+        }
+        for row in rows
+    ]
