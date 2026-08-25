@@ -33,15 +33,15 @@ async def handle_webhook(request: Request):
 
     import json
     payload = json.loads(payload_bytes)
-    event = request.headers.get("X-GitHub-Event")
-    logger.info("webhook_received", event=event)
+    gh_event = request.headers.get("X-GitHub-Event")
+    logger.info("webhook_received", gh_event=gh_event)
 
-    if event == "ping":
+    if gh_event == "ping":
         return {"status": "pong"}
 
-    if event == "pull_request":
+    if gh_event == "pull_request":
         action = payload.get("action")
-        if action == "opened":
+        if action in ("opened", "reopened"):
             pr_number = payload["pull_request"]["number"]
             repo_name = payload["repository"]["name"]
             owner = payload["repository"]["owner"]["login"]

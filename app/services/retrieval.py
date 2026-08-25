@@ -4,6 +4,7 @@ from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.embedder import embed_single
 from app.core.config import settings
+import asyncio
 
 logger = structlog.get_logger()
 
@@ -103,6 +104,8 @@ async def retrieve_for_pr(
 
     all_results = []
     for i, hunk in enumerate(hunks):
+        if i > 0:
+            await asyncio.sleep(20)
         similar = await find_similar_comments(hunk, repo_owner, repo_name)
         if similar:
             logger.info(
