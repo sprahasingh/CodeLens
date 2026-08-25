@@ -1,3 +1,4 @@
+import asyncio
 import structlog
 from typing import List, Dict, Any
 from sqlalchemy import text
@@ -8,6 +9,7 @@ logger = structlog.get_logger()
 
 SIMILARITY_THRESHOLD = 0.75
 MAX_RESULTS = 5
+EF_SEARCH = 40
 
 
 async def find_similar_comments(
@@ -16,11 +18,16 @@ async def find_similar_comments(
     repo_name: str,
     limit: int = MAX_RESULTS
 ) -> List[Dict[str, Any]]:
+    """Find review comments from past PRs similar to the given code hunk."""
+
+    if len(hunk.strip()) < 30:
+        logger.info("hunk_too_short_skipped", hunk_length=len(hunk.strip()))
+        return []
+
     query_vector = embed_single(hunk)
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
     async with AsyncSessionLocal() as session:
-        await session.execute(text("SET hnsw.ef_search = 40"))
         result = await session.execute(
             text("""
                 SELECT
@@ -84,3 +91,49 @@ def deduplicate_by_body(
             seen_bodies.add(normalized)
             deduped.append(result)
     return deduped
+
+
+async def retrieve_for_pr(
+    diff: str,
+    repo_owner: str,
+    repo_name: str
+) -> List[Dict[str, Any]]:
+    hunks = split_diff_into_hunks(diff)
+    logger.info("pr_hunks_extracted", count=len(hunks))
+
+    all_results = []
+    for i, hunk in enumerate(hunks):
+        if i > 0:
+            await asyncio.sleep(20)
+        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+        if similar:
+            logger.info(
+                "hunk_matched",
+                hunk_index=i,
+                matches=len(similar),
+                top_similarity=similar[0]["similarity"]
+            )
+            all_results.extend(similar)
+
+    deduplicated = deduplicate_by_body(all_results)
+    logger.info(
+        "pr_retrieval_complete",
+        total_hunks=len(hunks),
+        total_matches=len(deduplicated)
+    )
+    return deduplicated
+
+
+def split_diff_into_hunks(diff: str) -> List[str]:
+    hunks = []
+    current_hunk = []
+    for line in diff.split("\n"):
+        if line.startswith("@@"):
+            if current_hunk:
+                hunks.append("\n".join(current_hunk))
+            current_hunk = [line]
+        else:
+            current_hunk.append(line)
+    if current_hunk:
+        hunks.append("\n".join(current_hunk))
+    return [h for h in hunks if len(h.strip()) > 30]
