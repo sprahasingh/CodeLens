@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     github_installation_id: int
     redis_url: str
     voyage_api_key: str
+    webhook_secret: str = ""
 
     class Config:
         env_file = ".env"
