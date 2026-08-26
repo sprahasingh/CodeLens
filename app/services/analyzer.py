@@ -8,7 +8,7 @@ logger = structlog.get_logger()
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
-ANALYSIS_MODEL = "gemini-2.0-flash"
+ANALYSIS_MODEL = "gemini-3.6-flash"
 
 ANALYSIS_PROMPT = """Analyze the following code and identify potential issues.
 {code}

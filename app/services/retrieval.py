@@ -7,7 +7,7 @@ from app.services.embedder import embed_single
 
 logger = structlog.get_logger()
 
-SIMILARITY_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = 0.65
 MAX_RESULTS = 5
 EF_SEARCH = 40
 
