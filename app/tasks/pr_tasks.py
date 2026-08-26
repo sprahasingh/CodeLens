@@ -34,7 +34,7 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
         )
 
         posted = asyncio.run(
-            post_pr_comment(owner, repo_name, pr_number, feedback)
+            post_pr_comment(owner, repo_name, pr_number, feedback, similar_comments)
         )
 
         logger.info(

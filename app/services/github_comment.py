@@ -1,15 +1,17 @@
 import structlog
-import httpx
 from typing import List, Dict, Any
 from app.services.github_auth import get_github_client
 
 logger = structlog.get_logger()
 
-COMMENT_HEADER = "## 🔍 CodeLens Pre-Review Analysis\n\n"
+COMMENT_HEADER = "## CodeLens Pre-Review Analysis\n\n"
 COMMENT_FOOTER = "\n\n---\n*This analysis was generated automatically by CodeLens based on historical review patterns.*"
 
 
-def format_feedback_as_markdown(feedback: List[Dict[str, Any]]) -> str:
+def format_feedback_as_markdown(
+    feedback: List[Dict[str, Any]],
+    similar_comments: List[Dict[str, Any]] = []
+) -> str:
     if not feedback:
         return ""
 
@@ -26,6 +28,14 @@ def format_feedback_as_markdown(feedback: List[Dict[str, Any]]) -> str:
         lines.append(f"**Suggested check:** {item.get('suggested_check', '')}")
         lines.append("")
 
+    if similar_comments:
+        lines.append("### Retrieved from past reviews")
+        for c in similar_comments:
+            lines.append(
+                f"- `{c['path']}` (similarity: {c['similarity']:.0%}): *\"{c['body']}\"*"
+            )
+        lines.append("")
+
     lines.append(COMMENT_FOOTER)
     return "\n".join(lines)
 
@@ -34,13 +44,14 @@ async def post_pr_comment(
     owner: str,
     repo: str,
     pr_number: int,
-    feedback: List[Dict[str, Any]]
+    feedback: List[Dict[str, Any]],
+    similar_comments: List[Dict[str, Any]] = []
 ) -> bool:
     if not feedback:
         logger.info("no_feedback_to_post", pr_number=pr_number)
         return False
 
-    body = format_feedback_as_markdown(feedback)
+    body = format_feedback_as_markdown(feedback, similar_comments)
 
     try:
         async with await get_github_client() as client:
