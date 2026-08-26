@@ -9,7 +9,6 @@ logger = structlog.get_logger()
 
 SIMILARITY_THRESHOLD = 0.65
 MAX_RESULTS = 5
-EF_SEARCH = 40
 
 
 async def find_similar_comments(
@@ -98,6 +97,8 @@ async def retrieve_for_pr(
     repo_owner: str,
     repo_name: str
 ) -> List[Dict[str, Any]]:
+    """Retrieve similar past review comments for all hunks in a PR diff."""
+
     hunks = split_diff_into_hunks(diff)
     logger.info("pr_hunks_extracted", count=len(hunks))
 
@@ -127,6 +128,8 @@ async def retrieve_for_pr(
 
 
 def split_diff_into_hunks(diff: str) -> List[str]:
+    """Split a raw git diff string into individual hunks for embedding."""
+
     hunks = []
     current_hunk = []
     for line in diff.split("\n"):
