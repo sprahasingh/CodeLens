@@ -15,3 +15,4 @@ flower
 redis
 voyageai
 pgvector
+google-genai

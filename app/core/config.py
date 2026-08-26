@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     redis_url: str
     voyage_api_key: str
     webhook_secret: str = ""
+    gemini_api_key: str
 
     class Config:
         env_file = ".env"
