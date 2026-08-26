@@ -1,7 +1,6 @@
 import json
 import structlog
 from google import genai
-from google.genai import types
 from typing import List, Dict, Any
 from app.core.config import settings
 
@@ -13,8 +12,7 @@ SYNTHESIS_MODEL = "gemini-3.6-flash"
 
 SYNTHESIS_PROMPT = """You are a senior software engineer reviewing a pull request.
 You have been given a list of similar past review comments that were left on code similar to what appears in this new PR.
-
-Your job is to synthesize these past comments into clear, actionable pre-review feedback for the developer.
+Each comment has an index number.
 
 Past review comments retrieved:
 {comments}
@@ -22,9 +20,10 @@ Past review comments retrieved:
 For each distinct concern you identify, respond with a JSON array where each item has exactly these fields:
 - concern: brief description of the issue (1 sentence)
 - evidence: what in the past reviews suggests this concern (1 sentence)
-- confidence: float between 0.0 and 1.0 indicating how confident you are
+- confidence: float between 0.0 and 1.0
 - suggested_check: specific thing the developer should verify (1 sentence)
-- is_inference: true if this is inferred from patterns, false if directly stated
+- is_inference: true if inferred from patterns, false if directly stated
+- source_indices: list of integer indices of the past comments that support this concern
 
 Respond with ONLY a valid JSON array. No preamble, no explanation, no markdown.
 Example format:
@@ -34,7 +33,8 @@ Example format:
     "evidence": "Past reviewers flagged similar database calls that returned None silently",
     "confidence": 0.85,
     "suggested_check": "Verify that None return values are handled explicitly",
-    "is_inference": false
+    "is_inference": false,
+    "source_indices": [0, 2]
   }}
 ]"""
 
@@ -47,8 +47,8 @@ async def synthesize_feedback(
         return []
 
     comments_text = "\n".join([
-        f"- [{c['similarity']:.2f} similarity] {c['body']} (from {c['path']})"
-        for c in similar_comments
+        f"[{i}] [{c['similarity']:.2f} similarity] {c['body']} (from {c['path']})"
+        for i, c in enumerate(similar_comments)
     ])
 
     prompt = SYNTHESIS_PROMPT.format(comments=comments_text)
@@ -67,6 +67,14 @@ async def synthesize_feedback(
             raw = raw.strip()
 
         feedback = json.loads(raw)
+
+        for item in feedback:
+            indices = item.get("source_indices", [])
+            item["source_comments"] = [
+                similar_comments[i]
+                for i in indices
+                if i < len(similar_comments)
+            ]
 
         logger.info(
             "synthesis_complete",

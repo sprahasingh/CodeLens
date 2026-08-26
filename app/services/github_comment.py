@@ -8,6 +8,42 @@ COMMENT_HEADER = "## CodeLens Pre-Review Analysis\n\n"
 COMMENT_FOOTER = "\n\n---\n*This analysis was generated automatically by CodeLens based on historical review patterns.*"
 
 
+def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
+    lines = hunk.split("\n")
+    relevant = []
+    in_multiline_string = False
+    for line in lines:
+        if not line.startswith("+"):
+            continue
+        if line.startswith("+++"):
+            continue
+        clean = line[1:].strip()
+        if not clean:
+            continue
+        if clean.startswith("import ") or clean.startswith("from "):
+            continue
+        if clean.startswith("logger = "):
+            continue
+        if clean.startswith("client = "):
+            continue
+        if "= structlog" in clean:
+            continue
+        if '"""' in clean or "'''" in clean:
+            in_multiline_string = not in_multiline_string
+            continue
+        if in_multiline_string:
+            continue
+        relevant.append(line[1:])
+
+    if not relevant:
+        return ""
+
+    preview = "\n".join(relevant[:max_lines])
+    if len(relevant) > max_lines:
+        preview += f"\n... ({len(relevant) - max_lines} more lines)"
+    return preview
+
+
 def format_feedback_as_markdown(
     feedback: List[Dict[str, Any]],
     similar_comments: List[Dict[str, Any]] = []
@@ -22,18 +58,41 @@ def format_feedback_as_markdown(
         is_inference = item.get("is_inference", False)
         inference_tag = " *(inferred)*" if is_inference else ""
 
-        lines.append(f"### {i}. {item.get('concern', '')}{inference_tag}")
-        lines.append(f"**Confidence:** {confidence_pct}%")
-        lines.append(f"**Evidence:** {item.get('evidence', '')}")
-        lines.append(f"**Suggested check:** {item.get('suggested_check', '')}")
+        lines.append(f"---")
+        lines.append(f"### Finding {i}: {item.get('concern', '')}{inference_tag}")
+        lines.append(f"**Confidence:** {confidence_pct}% | **Suggested check:** {item.get('suggested_check', '')}")
         lines.append("")
 
-    if similar_comments:
-        lines.append("### Retrieved from past reviews")
-        for c in similar_comments:
-            lines.append(
-                f"- `{c['path']}` (similarity: {c['similarity']:.0%}): *\"{c['body']}\"*"
-            )
+        source_comments = item.get("source_comments", [])
+
+        if source_comments:
+            for sc in source_comments:
+                triggered_by = sc.get('triggered_by_hunk', '')
+                if triggered_by:
+                    current_preview = extract_relevant_lines(triggered_by)
+                    if current_preview:
+                        lines.append("**Your code (this PR):**")
+                        lines.append("")
+                        lines.append("```python")
+                        lines.append(current_preview)
+                        lines.append("```")
+                        lines.append("")
+                        break
+
+            for sc in source_comments:
+                line_ref = f" line {sc['line']}" if sc.get('line') else ""
+                past_preview = extract_relevant_lines(sc.get('diff_hunk', ''))
+                lines.append(f"**Similar past code** — `{sc['path']}`{line_ref} (similarity: {sc['similarity']:.0%}):")
+                lines.append("")
+                if past_preview:
+                    lines.append("```python")
+                    lines.append(past_preview)
+                    lines.append("```")
+                    lines.append("")
+                lines.append(f"**Past reviewer said:** *\"{sc['body']}\"*")
+                lines.append("")
+
+        lines.append(f"**Evidence:** {item.get('evidence', '')}")
         lines.append("")
 
     lines.append(COMMENT_FOOTER)

@@ -113,6 +113,8 @@ async def retrieve_for_pr(
                 matches=len(similar),
                 top_similarity=similar[0]["similarity"]
             )
+            for s in similar:
+                s["triggered_by_hunk"] = hunk
             all_results.extend(similar)
 
     deduplicated = deduplicate_by_body(all_results)
