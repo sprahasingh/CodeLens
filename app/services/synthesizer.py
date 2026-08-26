@@ -9,7 +9,7 @@ logger = structlog.get_logger()
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
-SYNTHESIS_MODEL = "gemini-2.0-flash"
+SYNTHESIS_MODEL = "gemini-3.6-flash"
 
 SYNTHESIS_PROMPT = """You are a senior software engineer reviewing a pull request.
 You have been given a list of similar past review comments that were left on code similar to what appears in this new PR.
