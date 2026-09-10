@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     github_app_id: int
     github_private_key_path: str
     github_installation_id: int
+    github_pat: str = ""
     redis_url: str
     voyage_api_key: str
     webhook_secret: str = ""

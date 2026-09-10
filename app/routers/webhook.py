@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from app.tasks.pr_tasks import process_pr
 from app.services.ingestion import ingest_repository
 from app.core.config import settings
+from app.services.ingestion import ingest_repository, ingest_public_repository
 
 logger = structlog.get_logger()
 
@@ -57,3 +58,9 @@ async def trigger_ingestion(owner: str, repo: str, background_tasks: BackgroundT
     background_tasks.add_task(ingest_repository, owner, repo)
     logger.info("ingestion_triggered", owner=owner, repo=repo)
     return {"status": "ingestion started", "owner": owner, "repo": repo}
+
+@router.post("/ingest-public/{owner}/{repo}")
+async def trigger_public_ingestion(owner: str, repo: str, background_tasks: BackgroundTasks):
+    background_tasks.add_task(ingest_public_repository, owner, repo)
+    logger.info("public_ingestion_triggered", owner=owner, repo=repo)
+    return {"status": "public ingestion started", "owner": owner, "repo": repo}
