@@ -8,6 +8,7 @@ from app.services.embedder import embed_texts
 from app.models.review_comment import ReviewComment
 from app.services.github_client import fetch_public_review_comments
 from sqlalchemy import text
+from voyageai.error import RateLimitError
 
 logger = structlog.get_logger()
 
@@ -125,34 +126,7 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
         )
         existing_ids = {row[0] for row in result.fetchall()}
 
-    logger.info(
-        "idempotency_debug",
-        total_fetched_ids=len(comment_ids),
-        sample_fetched_ids=comment_ids[:5],
-        existing_ids_found=len(existing_ids),
-        sample_existing_ids=list(existing_ids)[:5]
-    )
-
     existing_ids_int = {int(x) for x in existing_ids}
-
-    logger.info(
-        "pre_filter_debug",
-        comments_type=type(comments).__name__,
-        comments_len=len(comments),
-        first_comment_id=comments[0]["id"] if comments else None,
-        first_comment_id_type=type(comments[0]["id"]).__name__ if comments else None,
-        existing_sample=list(existing_ids_int)[:3]
-    )
-
-    if comments:
-        test_id = comments[0]["id"]
-        logger.info(
-            "membership_test",
-            test_id=test_id,
-            test_id_type=type(test_id).__name__,
-            existing_ids_int_len=len(existing_ids_int),
-            is_in_existing=int(test_id) in existing_ids_int
-        )
 
     new_comments = []
     for c in comments:
@@ -190,32 +164,61 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
         if not hunks:
             continue
 
-        embeddings = embed_texts(hunks)
+        max_retries = 3
+        retry_count = 0
+        embeddings = None
 
-        async with AsyncSessionLocal() as session:
-            for comment, embedding in zip(batch, embeddings):
-                pr_number = 0
-                if comment.get("pull_request_url"):
-                    pr_number = int(comment["pull_request_url"].split("/")[-1])
+        while retry_count < max_retries:
+            try:
+                embeddings = embed_texts(hunks)
+                break
+            except RateLimitError:
+                retry_count += 1
+                wait_time = 65
+                logger.warning(
+                    "voyage_rate_limited_retrying",
+                    batch=batch_num,
+                    retry_count=retry_count,
+                    wait_seconds=wait_time
+                )
+                await asyncio.sleep(wait_time)
 
-                stmt = insert(ReviewComment).values(
-                    github_comment_id=comment["id"],
-                    repo_owner=owner,
-                    repo_name=repo,
-                    pr_number=pr_number,
-                    path=comment.get("path", ""),
-                    line=comment.get("line"),
-                    diff_hunk=comment.get("diff_hunk", ""),
-                    body=comment.get("body", ""),
-                    author=comment.get("user", {}).get("login", "unknown"),
-                    embedding=embedding
-                ).on_conflict_do_nothing(index_elements=["github_comment_id"])
-                result = await session.execute(stmt)
-                if result.rowcount > 0:
-                    ingested += 1
-                else:
-                    skipped += 1
-            await session.commit()
+        if embeddings is None:
+            logger.error("voyage_rate_limit_exhausted_retries", batch=batch_num)
+            continue
+
+        try:
+            async with AsyncSessionLocal() as session:
+                for comment, embedding in zip(batch, embeddings):
+                    pr_number = 0
+                    if comment.get("pull_request_url"):
+                        pr_number = int(comment["pull_request_url"].split("/")[-1])
+
+                    stmt = insert(ReviewComment).values(
+                        github_comment_id=comment["id"],
+                        repo_owner=owner,
+                        repo_name=repo,
+                        pr_number=pr_number,
+                        path=comment.get("path", ""),
+                        line=comment.get("line"),
+                        diff_hunk=comment.get("diff_hunk", ""),
+                        body=comment.get("body", ""),
+                        author=comment.get("user", {}).get("login", "unknown"),
+                        embedding=embedding
+                    ).on_conflict_do_nothing(index_elements=["github_comment_id"])
+                    result = await session.execute(stmt)
+                    if result.rowcount > 0:
+                        ingested += 1
+                    else:
+                        skipped += 1
+                await session.commit()
+        except Exception as db_error:
+            logger.error(
+                "db_insert_failed_for_batch",
+                batch=batch_num,
+                error=str(db_error)
+            )
+            continue
 
         logger.info(
             "public_batch_ingested",
