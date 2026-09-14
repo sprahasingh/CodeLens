@@ -1,9 +1,11 @@
 import asyncio
 import structlog
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.embedder import embed_single
+import re
+
 
 logger = structlog.get_logger()
 
@@ -142,3 +144,11 @@ def split_diff_into_hunks(diff: str) -> List[str]:
     if current_hunk:
         hunks.append("\n".join(current_hunk))
     return [h for h in hunks if len(h.strip()) > 30]
+
+
+def extract_starting_line(hunk: str) -> Optional[int]:
+    """Extract the starting line number in the new file from a diff hunk header."""
+    match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', hunk)
+    if match:
+        return int(match.group(1))
+    return None

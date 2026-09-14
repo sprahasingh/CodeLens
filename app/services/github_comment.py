@@ -1,6 +1,9 @@
 import structlog
 from typing import List, Dict, Any
 from app.services.github_auth import get_github_client
+from app.models.prediction import Prediction
+from app.core.database import AsyncSessionLocal
+from app.services.retrieval import extract_starting_line
 
 logger = structlog.get_logger()
 
@@ -98,6 +101,42 @@ def format_feedback_as_markdown(
     lines.append(COMMENT_FOOTER)
     return "\n".join(lines)
 
+async def save_predictions(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    feedback: List[Dict[str, Any]]
+) -> None:
+    async with AsyncSessionLocal() as session:
+        for item in feedback:
+            source_comments = item.get("source_comments", [])
+            path = source_comments[0]["path"] if source_comments else ""
+
+            predicted_line = None
+            if source_comments:
+                triggered_by = source_comments[0].get("triggered_by_hunk", "")
+                if triggered_by:
+                    predicted_line = extract_starting_line(triggered_by)
+
+            prediction = Prediction(
+                repo_owner=owner,
+                repo_name=repo,
+                pr_number=pr_number,
+                path=path,
+                predicted_line=predicted_line,
+                concern=item.get("concern", ""),
+                confidence=item.get("confidence", 0.0)
+            )
+            session.add(prediction)
+        await session.commit()
+
+    logger.info(
+        "predictions_saved",
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        count=len(feedback)
+    )
 
 async def post_pr_comment(
     owner: str,
@@ -127,6 +166,7 @@ async def post_pr_comment(
                 repo=repo,
                 comment_url=comment_url
             )
+            await save_predictions(owner, repo, pr_number, feedback)
             return True
 
     except Exception as e:
