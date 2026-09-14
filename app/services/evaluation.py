@@ -10,7 +10,11 @@ from app.models.false_negative import FalseNegative
 logger = structlog.get_logger()
 
 POSITIONAL_LINE_WINDOW = 10
-EMBEDDING_MATCH_THRESHOLD = 0.75
+# Calibrated via held-out evaluation against psf/requests and tiangolo/fastapi
+# (Sep 2026): 0.75 (inherited from code-to-code retrieval) yielded 0/7 matches
+# on real independent reviewer comments. 0.45 gave best F1 (0.387) in an
+# empirical threshold sweep. See app/scripts/held_out_eval.py.
+EMBEDDING_MATCH_THRESHOLD = 0.45
 
 
 async def embed_with_retry(text_to_embed: str, max_retries: int = 3) -> list:

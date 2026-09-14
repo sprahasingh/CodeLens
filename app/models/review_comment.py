@@ -23,5 +23,6 @@ class ReviewComment(Base):
     diff_hunk: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)
     author: Mapped[str] = mapped_column(String(255))
+    comment_created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     embedding: Mapped[list] = mapped_column(Vector(EMBEDDING_DIMENSION), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
