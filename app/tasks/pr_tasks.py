@@ -5,6 +5,7 @@ from app.services.github_client import fetch_pr_diff
 from app.services.retrieval import retrieve_for_pr
 from app.services.synthesizer import synthesize_feedback
 from app.services.github_comment import post_pr_comment
+from app.core.database import engine
 
 logger = structlog.get_logger()
 
@@ -13,8 +14,10 @@ logger = structlog.get_logger()
 def process_pr(self, pr_number: int, repo_name: str, owner: str):
     logger.info("process_pr_started", pr_number=pr_number, repo=repo_name)
     try:
+        asyncio.run(engine.dispose())
         diff = asyncio.run(fetch_pr_diff(owner, repo_name, pr_number))
 
+        asyncio.run(engine.dispose())
         similar_comments = asyncio.run(
             retrieve_for_pr(diff, owner, repo_name)
         )
@@ -33,6 +36,7 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
             concerns_identified=len(feedback)
         )
 
+        asyncio.run(engine.dispose())
         posted = asyncio.run(
             post_pr_comment(owner, repo_name, pr_number, feedback, similar_comments)
         )

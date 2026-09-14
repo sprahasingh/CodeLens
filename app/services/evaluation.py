@@ -3,11 +3,31 @@ from typing import Dict, Any
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.embedder import embed_single
+from voyageai.error import RateLimitError
+import asyncio
+from app.models.false_negative import FalseNegative
 
 logger = structlog.get_logger()
 
 POSITIONAL_LINE_WINDOW = 10
 EMBEDDING_MATCH_THRESHOLD = 0.75
+
+
+async def embed_with_retry(text_to_embed: str, max_retries: int = 3) -> list:
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            return embed_single(text_to_embed)
+        except RateLimitError:
+            retry_count += 1
+            logger.warning(
+                "voyage_rate_limited_retrying_eval",
+                retry_count=retry_count,
+                wait_seconds=65
+            )
+            await asyncio.sleep(65)
+    logger.error("voyage_rate_limit_exhausted_eval")
+    raise RuntimeError("Could not embed text after retries")
 
 
 async def record_ground_truth(
@@ -48,15 +68,29 @@ async def record_ground_truth(
         )
         candidates = result.fetchall()
 
-    if not candidates:
-        logger.info(
-            "ground_truth_no_candidates",
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            path=comment_path
-        )
-        return
+        if not candidates:
+            async with AsyncSessionLocal() as session:
+                fn = FalseNegative(
+                    repo_owner=owner,
+                    repo_name=repo,
+                    pr_number=pr_number,
+                    path=comment_path,
+                    comment_line=comment_line,
+                    comment_body=comment_body,
+                    source_comment_id=comment_id
+                )
+                session.add(fn)
+                await session.commit()
+
+            logger.info(
+                "false_negative_recorded",
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                path=comment_path,
+                comment_id=comment_id
+            )
+            return
 
     positional_matches = [
         c for c in candidates
@@ -64,17 +98,31 @@ async def record_ground_truth(
     ]
 
     if not positional_matches:
+        async with AsyncSessionLocal() as session:
+            fn = FalseNegative(
+                repo_owner=owner,
+                repo_name=repo,
+                pr_number=pr_number,
+                path=comment_path,
+                comment_line=comment_line,
+                comment_body=comment_body,
+                source_comment_id=comment_id
+            )
+            session.add(fn)
+            await session.commit()
+
         logger.info(
-            "ground_truth_no_positional_match",
+            "false_negative_recorded",
             owner=owner,
             repo=repo,
             pr_number=pr_number,
             path=comment_path,
-            comment_line=comment_line
+            comment_id=comment_id,
+            reason="no_positional_match"
         )
         return
 
-    comment_vector = embed_single(comment_body)
+    comment_vector = await embed_with_retry(comment_body)
     comment_vector_str = "[" + ",".join(str(x) for x in comment_vector) + "]"
 
     best_match = None
@@ -82,7 +130,7 @@ async def record_ground_truth(
 
     async with AsyncSessionLocal() as session:
         for candidate in positional_matches:
-            concern_vector = embed_single(candidate.concern)
+            concern_vector = await embed_with_retry(candidate.concern)
             concern_vector_str = "[" + ",".join(str(x) for x in concern_vector) + "]"
 
             result = await session.execute(

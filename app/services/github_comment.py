@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 from app.services.github_auth import get_github_client
 from app.models.prediction import Prediction
 from app.core.database import AsyncSessionLocal
+from app.services.retrieval import extract_starting_line
 
 logger = structlog.get_logger()
 
@@ -110,8 +111,12 @@ async def save_predictions(
         for item in feedback:
             source_comments = item.get("source_comments", [])
             path = source_comments[0]["path"] if source_comments else ""
+
             predicted_line = None
-            triggered_by = source_comments[0].get("triggered_by_hunk", "") if source_comments else ""
+            if source_comments:
+                triggered_by = source_comments[0].get("triggered_by_hunk", "")
+                if triggered_by:
+                    predicted_line = extract_starting_line(triggered_by)
 
             prediction = Prediction(
                 repo_owner=owner,

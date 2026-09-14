@@ -6,6 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.routers import repos
 from app.routers import webhook
 from app.core.config import settings
+from app.routers import metrics
 from app.core.middleware import RequestIdMiddleware
 
 structlog.configure(
@@ -31,6 +32,7 @@ app = FastAPI(
 app.add_middleware(RequestIdMiddleware)
 app.include_router(repos.router)
 app.include_router(webhook.router)
+app.include_router(metrics.router)
 
 
 @app.exception_handler(StarletteHTTPException)
