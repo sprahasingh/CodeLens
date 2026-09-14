@@ -9,6 +9,7 @@ from app.models.review_comment import ReviewComment
 from app.services.github_client import fetch_public_review_comments
 from sqlalchemy import text
 from voyageai.error import RateLimitError
+from datetime import datetime
 
 logger = structlog.get_logger()
 
@@ -47,6 +48,7 @@ async def ingest_repository(owner: str, repo: str) -> dict:
                     diff_hunk=comment["diff_hunk"],
                     body=comment["body"],
                     author=comment["user"]["login"],
+                    comment_created_at=datetime.fromisoformat(comment["created_at"].replace("Z", "+00:00")).replace(tzinfo=None),
                     embedding=embedding
                 ).on_conflict_do_nothing(
                     index_elements=["github_comment_id"]
@@ -194,6 +196,10 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
                     if comment.get("pull_request_url"):
                         pr_number = int(comment["pull_request_url"].split("/")[-1])
 
+                    comment_created_at = None
+                    if comment.get("created_at"):
+                        comment_created_at=datetime.fromisoformat(comment["created_at"].replace("Z", "+00:00")).replace(tzinfo=None),
+
                     stmt = insert(ReviewComment).values(
                         github_comment_id=comment["id"],
                         repo_owner=owner,
@@ -204,6 +210,7 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
                         diff_hunk=comment.get("diff_hunk", ""),
                         body=comment.get("body", ""),
                         author=comment.get("user", {}).get("login", "unknown"),
+                        comment_created_at=comment_created_at,
                         embedding=embedding
                     ).on_conflict_do_nothing(index_elements=["github_comment_id"])
                     result = await session.execute(stmt)
