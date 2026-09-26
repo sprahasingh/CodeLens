@@ -11,30 +11,10 @@ from app.models.failed_pr import FailedPR
 logger = structlog.get_logger()
 
 
-async def record_failed_pr(owner: str, repo_name: str, pr_number: int, error: str, attempts: int) -> None:
-    async with AsyncSessionLocal() as session:
-        session.add(FailedPR(
-            repo_owner=owner,
-            repo_name=repo_name,
-            pr_number=pr_number,
-            error=error[:2000],
-            attempts=attempts
-        ))
-        await session.commit()
-
-
-@celery_app.task(name="process_pr", bind=True, max_retries=3)
-def process_pr(self, pr_number: int, repo_name: str, owner: str):
-    attempt = self.request.retries + 1
-    logger.info("process_pr_started", pr_number=pr_number, repo=repo_name, attempt=attempt)
+async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
     try:
-        asyncio.run(engine.dispose())
-        diff = asyncio.run(fetch_pr_diff(owner, repo_name, pr_number))
-
-        asyncio.run(engine.dispose())
-        hunk_groups = asyncio.run(
-            retrieve_for_pr(diff, owner, repo_name)
-        )
+        diff = await fetch_pr_diff(owner, repo_name, pr_number)
+        hunk_groups = await retrieve_for_pr(diff, owner, repo_name)
         total_matches = sum(len(g["matches"]) for g in hunk_groups)
 
         logger.info(
@@ -46,19 +26,12 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
 
         feedback = []
         for group in hunk_groups:
-            hunk_feedback = asyncio.run(synthesize_feedback(group["hunk"], group["matches"]))
+            hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
             feedback.extend(hunk_feedback)
 
-        logger.info(
-            "synthesis_complete",
-            pr_number=pr_number,
-            concerns_identified=len(feedback)
-        )
+        logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
 
-        asyncio.run(engine.dispose())
-        posted = asyncio.run(
-            post_pr_comment(owner, repo_name, pr_number, feedback)
-        )
+        posted = await post_pr_comment(owner, repo_name, pr_number, feedback)
 
         logger.info(
             "process_pr_complete",
@@ -75,13 +48,33 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
             "concerns_identified": len(feedback),
             "comment_posted": posted
         }
+    finally:
+        await engine.dispose()
 
+
+async def _record_failed_pr(owner: str, repo_name: str, pr_number: int, error: str, attempts: int) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(FailedPR(
+            repo_owner=owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            error=error[:2000],
+            attempts=attempts
+        ))
+        await session.commit()
+
+
+@celery_app.task(name="process_pr", bind=True, max_retries=3)
+def process_pr(self, pr_number: int, repo_name: str, owner: str):
+    attempt = self.request.retries + 1
+    logger.info("process_pr_started", pr_number=pr_number, repo=repo_name, attempt=attempt)
+    try:
+        return asyncio.run(_process_pr_async(pr_number, repo_name, owner))
     except Exception as exc:
         logger.error("process_pr_failed", pr_number=pr_number, error=str(exc), attempt=attempt)
 
         if self.request.retries >= self.max_retries:
-            asyncio.run(engine.dispose())
-            asyncio.run(record_failed_pr(owner, repo_name, pr_number, str(exc), attempt))
+            asyncio.run(_record_failed_pr(owner, repo_name, pr_number, str(exc), attempt))
             logger.error(
                 "process_pr_dead_lettered",
                 pr_number=pr_number,
