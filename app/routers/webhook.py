@@ -66,7 +66,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 
     if gh_event == "pull_request":
         action = payload.get("action")
-        if action in ("opened", "reopened"):
+        if action in ("opened", "reopened", "synchronize"):
             pr_number = payload["pull_request"]["number"]
             repo_name = payload["repository"]["name"]
             owner = payload["repository"]["owner"]["login"]
