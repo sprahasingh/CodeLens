@@ -19,7 +19,11 @@ async def find_similar_comments(
     repo_name: str,
     limit: int = MAX_RESULTS
 ) -> List[Dict[str, Any]]:
-    """Find review comments from past PRs similar to the given code hunk."""
+    """Find review comments from past PRs similar to the given code hunk.
+
+    Searches the full corpus (all indexed repos) so new repos with no
+    review history can still benefit from cross-repo pattern matching.
+    """
 
     if len(hunk.strip()) < 30:
         logger.info("hunk_too_short_skipped", hunk_length=len(hunk.strip()))
@@ -41,16 +45,12 @@ async def find_similar_comments(
                     1 - (embedding <=> CAST(:query_vector AS vector)) AS similarity
                 FROM review_comments
                 WHERE
-                    repo_owner = :repo_owner
-                    AND repo_name = :repo_name
-                    AND 1 - (embedding <=> CAST(:query_vector AS vector)) >= :threshold
+                    1 - (embedding <=> CAST(:query_vector AS vector)) >= :threshold
                 ORDER BY embedding <=> CAST(:query_vector AS vector)
                 LIMIT :limit
             """),
             {
                 "query_vector": query_vector_str,
-                "repo_owner": repo_owner,
-                "repo_name": repo_name,
                 "threshold": SIMILARITY_THRESHOLD,
                 "limit": limit
             }

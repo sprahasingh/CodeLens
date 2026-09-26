@@ -12,44 +12,41 @@ logger = structlog.get_logger()
 
 
 async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
-    try:
-        diff = await fetch_pr_diff(owner, repo_name, pr_number)
-        hunk_groups = await retrieve_for_pr(diff, owner, repo_name)
-        total_matches = sum(len(g["matches"]) for g in hunk_groups)
+    diff = await fetch_pr_diff(owner, repo_name, pr_number)
+    hunk_groups = await retrieve_for_pr(diff, owner, repo_name)
+    total_matches = sum(len(g["matches"]) for g in hunk_groups)
 
-        logger.info(
-            "retrieval_complete",
-            pr_number=pr_number,
-            hunks_with_matches=len(hunk_groups),
-            similar_comments_found=total_matches
-        )
+    logger.info(
+        "retrieval_complete",
+        pr_number=pr_number,
+        hunks_with_matches=len(hunk_groups),
+        similar_comments_found=total_matches
+    )
 
-        feedback = []
-        for group in hunk_groups:
-            hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
-            feedback.extend(hunk_feedback)
+    feedback = []
+    for group in hunk_groups:
+        hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
+        feedback.extend(hunk_feedback)
 
-        logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
+    logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
 
-        posted = await post_pr_comment(owner, repo_name, pr_number, feedback)
+    posted = await post_pr_comment(owner, repo_name, pr_number, feedback)
 
-        logger.info(
-            "process_pr_complete",
-            pr_number=pr_number,
-            similar_comments_found=total_matches,
-            concerns_identified=len(feedback),
-            comment_posted=posted
-        )
+    logger.info(
+        "process_pr_complete",
+        pr_number=pr_number,
+        similar_comments_found=total_matches,
+        concerns_identified=len(feedback),
+        comment_posted=posted
+    )
 
-        return {
-            "status": "complete",
-            "pr_number": pr_number,
-            "similar_comments_found": total_matches,
-            "concerns_identified": len(feedback),
-            "comment_posted": posted
-        }
-    finally:
-        await engine.dispose()
+    return {
+        "status": "complete",
+        "pr_number": pr_number,
+        "similar_comments_found": total_matches,
+        "concerns_identified": len(feedback),
+        "comment_posted": posted
+    }
 
 
 async def _record_failed_pr(owner: str, repo_name: str, pr_number: int, error: str, attempts: int) -> None:
