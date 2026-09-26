@@ -10,7 +10,9 @@ DATABASE_URL = settings.database_url.replace(
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    connect_args={"ssl": True}
+    connect_args={"ssl": True},
+    pool_pre_ping=True,
+    pool_recycle=300,
 )
 
 AsyncSessionLocal = async_sessionmaker(
