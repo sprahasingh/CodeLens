@@ -5,14 +5,28 @@ from app.services.github_client import fetch_pr_diff
 from app.services.retrieval import retrieve_for_pr
 from app.services.synthesizer import synthesize_feedback
 from app.services.github_comment import post_pr_comment
-from app.core.database import engine
+from app.core.database import engine, AsyncSessionLocal
+from app.models.failed_pr import FailedPR
 
 logger = structlog.get_logger()
 
 
+async def record_failed_pr(owner: str, repo_name: str, pr_number: int, error: str, attempts: int) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(FailedPR(
+            repo_owner=owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            error=error[:2000],
+            attempts=attempts
+        ))
+        await session.commit()
+
+
 @celery_app.task(name="process_pr", bind=True, max_retries=3)
 def process_pr(self, pr_number: int, repo_name: str, owner: str):
-    logger.info("process_pr_started", pr_number=pr_number, repo=repo_name)
+    attempt = self.request.retries + 1
+    logger.info("process_pr_started", pr_number=pr_number, repo=repo_name, attempt=attempt)
     try:
         asyncio.run(engine.dispose())
         diff = asyncio.run(fetch_pr_diff(owner, repo_name, pr_number))
@@ -63,5 +77,17 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
         }
 
     except Exception as exc:
-        logger.error("process_pr_failed", pr_number=pr_number, error=str(exc))
+        logger.error("process_pr_failed", pr_number=pr_number, error=str(exc), attempt=attempt)
+
+        if self.request.retries >= self.max_retries:
+            asyncio.run(engine.dispose())
+            asyncio.run(record_failed_pr(owner, repo_name, pr_number, str(exc), attempt))
+            logger.error(
+                "process_pr_dead_lettered",
+                pr_number=pr_number,
+                repo=repo_name,
+                attempts=attempt
+            )
+            raise
+
         raise self.retry(exc=exc, countdown=60)

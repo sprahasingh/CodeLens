@@ -10,6 +10,7 @@ import app.models.review_comment
 import app.models.prediction
 import app.models.false_negative
 import app.models.processed_pr
+import app.models.failed_pr
 
 config = context.config
 fileConfig(config.config_file_name)

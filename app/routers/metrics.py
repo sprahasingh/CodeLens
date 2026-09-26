@@ -86,3 +86,36 @@ async def get_accuracy_metrics(owner: str = None, repo: str = None):
         "recall": recall,
         "f1": f1
     }
+
+
+@router.get("/metrics/failed-prs")
+async def get_failed_prs(limit: int = 50):
+    """List PRs whose processing exhausted all Celery retries, so they can
+    be inspected or manually replayed instead of only existing as a log line."""
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT id, repo_owner, repo_name, pr_number, error, attempts, failed_at
+                FROM failed_prs
+                ORDER BY failed_at DESC
+                LIMIT :limit
+            """),
+            {"limit": limit}
+        )
+        rows = result.fetchall()
+
+    return {
+        "count": len(rows),
+        "failed_prs": [
+            {
+                "id": row.id,
+                "repo": f"{row.repo_owner}/{row.repo_name}",
+                "pr_number": row.pr_number,
+                "attempts": row.attempts,
+                "error": row.error,
+                "failed_at": row.failed_at.isoformat()
+            }
+            for row in rows
+        ]
+    }

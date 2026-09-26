@@ -32,7 +32,16 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
                 }
             )
             response.raise_for_status()
-            raw = response.json()["choices"][0]["message"]["content"].strip()
+            body = response.json()
+            usage = body.get("usage", {})
+            logger.info(
+                "groq_call_usage",
+                model=model,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens")
+            )
+            raw = body["choices"][0]["message"]["content"].strip()
             return json.loads(raw)
     except httpx.HTTPStatusError as e:
         logger.error(

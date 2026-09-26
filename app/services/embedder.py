@@ -23,7 +23,12 @@ def embed_texts(texts: List[str], model: str = EMBEDDING_MODEL) -> List[List[flo
     if not texts:
         return []
     result = client.embed(texts, model=model, input_type="document")
-    logger.info("texts_embedded", count=len(texts), model=model)
+    logger.info(
+        "texts_embedded",
+        count=len(texts),
+        model=model,
+        total_tokens=result.total_tokens
+    )
     return result.embeddings
 
 

@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -7,7 +7,11 @@ class Settings(BaseSettings):
     debug: bool = True
     database_url: str
     github_app_id: int
-    github_private_key_path: str
+    # Either github_private_key (raw PEM content, for platforms like Fly.io
+    # where mounting a local file isn't practical) or github_private_key_path
+    # (a file path, for local/Docker-Compose use) must be set.
+    github_private_key: str = ""
+    github_private_key_path: str = ""
     github_installation_id: int
     github_pat: str = ""
     redis_url: str
@@ -15,9 +19,7 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     groq_api_key: str
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

@@ -8,8 +8,14 @@ GITHUB_API_BASE = "https://api.github.com"
 
 
 def load_private_key() -> str:
-    key_path = Path(settings.github_private_key_path)
-    return key_path.read_text()
+    if settings.github_private_key:
+        return settings.github_private_key
+    if settings.github_private_key_path:
+        return Path(settings.github_private_key_path).read_text()
+    raise RuntimeError(
+        "Set either GITHUB_PRIVATE_KEY (raw PEM content) or "
+        "GITHUB_PRIVATE_KEY_PATH (a file path)."
+    )
 
 
 def generate_jwt() -> str:
