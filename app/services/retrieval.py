@@ -9,7 +9,7 @@ import re
 
 logger = structlog.get_logger()
 
-SIMILARITY_THRESHOLD = 0.65
+SIMILARITY_THRESHOLD = 0.55
 MAX_RESULTS = 5
 
 
