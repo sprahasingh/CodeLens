@@ -138,17 +138,21 @@ async def save_predictions(
         count=len(feedback)
     )
 
+NO_CONCERNS_BODY = (
+    "## CodeLens Pre-Review Analysis\n\n"
+    "No concerns found for this PR — no similar past review patterns matched the changes above the confidence threshold.\n\n"
+    "---\n"
+    "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
+)
+
+
 async def post_pr_comment(
     owner: str,
     repo: str,
     pr_number: int,
     feedback: List[Dict[str, Any]]
 ) -> bool:
-    if not feedback:
-        logger.info("no_feedback_to_post", pr_number=pr_number)
-        return False
-
-    body = format_feedback_as_markdown(feedback)
+    body = format_feedback_as_markdown(feedback) if feedback else NO_CONCERNS_BODY
 
     try:
         async with await get_github_client() as client:
