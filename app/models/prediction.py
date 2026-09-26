@@ -19,4 +19,5 @@ class Prediction(Base):
     source_comment_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     matched: Mapped[bool] = mapped_column(Boolean, nullable=True)
     match_type: Mapped[str] = mapped_column(String(50), nullable=True)
+    match_reason: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

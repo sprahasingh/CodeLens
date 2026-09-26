@@ -7,6 +7,9 @@ from app.core.config import settings
 from app.core.database import Base
 import app.models.repository
 import app.models.review_comment
+import app.models.prediction
+import app.models.false_negative
+import app.models.processed_pr
 
 config = context.config
 fileConfig(config.config_file_name)

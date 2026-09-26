@@ -1,0 +1,35 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Overrides the host absolute path in .env with the in-container mount below.
+      GITHUB_PRIVATE_KEY_PATH: /app/secrets/github-private-key.pem
+    volumes:
+      # Update this filename if the GitHub App private key is ever rotated.
+      - ./codelens-spraha.2026-08-18.private-key.pem:/app/secrets/github-private-key.pem:ro
+
+  worker:
+    build: .
+    command: celery -A app.core.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      GITHUB_PRIVATE_KEY_PATH: /app/secrets/github-private-key.pem
+    volumes:
+      - ./codelens-spraha.2026-08-18.private-key.pem:/app/secrets/github-private-key.pem:ro
+
+  flower:
+    build: .
+    command: celery -A app.core.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env
+    environment:
+      GITHUB_PRIVATE_KEY_PATH: /app/secrets/github-private-key.pem
+    volumes:
+      - ./codelens-spraha.2026-08-18.private-key.pem:/app/secrets/github-private-key.pem:ro

@@ -48,8 +48,7 @@ def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
 
 
 def format_feedback_as_markdown(
-    feedback: List[Dict[str, Any]],
-    similar_comments: List[Dict[str, Any]] = []
+    feedback: List[Dict[str, Any]]
 ) -> str:
     if not feedback:
         return ""
@@ -92,7 +91,8 @@ def format_feedback_as_markdown(
                     lines.append(past_preview)
                     lines.append("```")
                     lines.append("")
-                lines.append(f"**Past reviewer said:** *\"{sc['body']}\"*")
+                source_link = f" ([view original]({sc['html_url']}))" if sc.get('html_url') else ""
+                lines.append(f"**Past reviewer said:** *\"{sc['body']}\"*{source_link}")
                 lines.append("")
 
         lines.append(f"**Evidence:** {item.get('evidence', '')}")
@@ -142,14 +142,13 @@ async def post_pr_comment(
     owner: str,
     repo: str,
     pr_number: int,
-    feedback: List[Dict[str, Any]],
-    similar_comments: List[Dict[str, Any]] = []
+    feedback: List[Dict[str, Any]]
 ) -> bool:
     if not feedback:
         logger.info("no_feedback_to_post", pr_number=pr_number)
         return False
 
-    body = format_feedback_as_markdown(feedback, similar_comments)
+    body = format_feedback_as_markdown(feedback)
 
     try:
         async with await get_github_client() as client:

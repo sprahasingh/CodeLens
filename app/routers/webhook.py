@@ -2,11 +2,13 @@ import hmac
 import hashlib
 import structlog
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from sqlalchemy.dialects.postgresql import insert
 from app.tasks.pr_tasks import process_pr
-from app.services.ingestion import ingest_repository
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.services.ingestion import ingest_repository, ingest_public_repository
 from app.services.evaluation import record_ground_truth
+from app.models.processed_pr import ProcessedPR
 
 logger = structlog.get_logger()
 
@@ -22,6 +24,27 @@ def verify_webhook_signature(payload: bytes, signature: str) -> bool:
         hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+async def claim_pr_processing(owner: str, repo_name: str, pr_number: int, head_sha: str) -> bool:
+    """Atomically claim (repo, pr_number, head_sha) for processing.
+
+    Returns True the first time this exact PR at this exact commit is seen,
+    False if it was already claimed (duplicate webhook delivery, or a retry
+    of the same delivery) so the caller can skip re-queuing/re-posting.
+    """
+    stmt = insert(ProcessedPR).values(
+        repo_owner=owner,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        head_sha=head_sha
+    ).on_conflict_do_nothing(
+        index_elements=["repo_owner", "repo_name", "pr_number", "head_sha"]
+    )
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        await session.commit()
+    return result.rowcount > 0
 
 
 @router.post("/webhook")
@@ -47,8 +70,20 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
             pr_number = payload["pull_request"]["number"]
             repo_name = payload["repository"]["name"]
             owner = payload["repository"]["owner"]["login"]
+            head_sha = payload["pull_request"]["head"]["sha"]
+
+            claimed = await claim_pr_processing(owner, repo_name, pr_number, head_sha)
+            if not claimed:
+                logger.info(
+                    "duplicate_webhook_skipped",
+                    pr_number=pr_number,
+                    repo=repo_name,
+                    head_sha=head_sha
+                )
+                return {"status": "duplicate_skipped"}
+
             process_pr.delay(pr_number, repo_name, owner)
-            logger.info("pr_job_queued", pr_number=pr_number, repo=repo_name)
+            logger.info("pr_job_queued", pr_number=pr_number, repo=repo_name, head_sha=head_sha)
             return {"status": "queued"}
 
     if gh_event == "pull_request_review_comment":

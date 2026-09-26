@@ -16,12 +16,26 @@ logger = structlog.get_logger()
 BATCH_SIZE = 50
 PUBLIC_INGEST_BATCH_SIZE = 10
 
+# Markers seen in comments that are themselves the output of an automated
+# review tool (structured severity/confidence tags), not organic human
+# feedback — found contaminating the corpus via an author with no [bot]
+# suffix. The eval's ground-truth matching assumes real reviewer comments
+# are human-written, so these must never enter the corpus.
+AUTOMATED_REVIEW_MARKERS = ("**Confidence:**", "Suggested fix:")
+
+
+def _is_automated_review_content(body: str) -> bool:
+    return any(marker in body for marker in AUTOMATED_REVIEW_MARKERS)
+
 
 async def ingest_repository(owner: str, repo: str) -> dict:
     logger.info("ingestion_started", owner=owner, repo=repo)
 
     comments = await fetch_all_review_comments(owner, repo)
     logger.info("comments_fetched", count=len(comments))
+
+    comments = [c for c in comments if not _is_automated_review_content(c.get("body", ""))]
+    logger.info("comments_after_automated_filter", count=len(comments))
 
     if not comments:
         logger.info("no_comments_to_ingest", owner=owner, repo=repo)
@@ -49,6 +63,7 @@ async def ingest_repository(owner: str, repo: str) -> dict:
                     body=comment["body"],
                     author=comment["user"]["login"],
                     comment_created_at=datetime.fromisoformat(comment["created_at"].replace("Z", "+00:00")).replace(tzinfo=None),
+                    html_url=comment.get("html_url"),
                     embedding=embedding
                 ).on_conflict_do_nothing(
                     index_elements=["github_comment_id"]
@@ -77,40 +92,6 @@ async def ingest_repository(owner: str, repo: str) -> dict:
     return {"ingested": ingested, "skipped": skipped}
 
 
-async def find_similar_comments(hunk: str, limit: int = 5) -> list:
-    from app.services.embedder import embed_single
-
-    query_vector = embed_single(hunk)
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            text("""
-                SELECT id, path, line, diff_hunk, body, author,
-                       1 - (embedding <=> :query_vector) as similarity
-                FROM review_comments
-                ORDER BY embedding <=> :query_vector
-                LIMIT :limit
-            """),
-            {
-                "query_vector": str(query_vector),
-                "limit": limit
-            }
-        )
-        rows = result.fetchall()
-
-    return [
-        {
-            "path": row.path,
-            "line": row.line,
-            "diff_hunk": row.diff_hunk,
-            "body": row.body,
-            "author": row.author,
-            "similarity": row.similarity
-        }
-        for row in rows
-    ]
-
-
 async def ingest_public_repository(owner: str, repo: str, max_comments: int = 2000) -> dict:
     """Ingest review comments from a public repository for corpus backfill."""
 
@@ -119,6 +100,9 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
     if not comments:
         logger.warning("no_public_comments_fetched", owner=owner, repo=repo)
         return {"ingested": 0, "skipped": 0}
+
+    comments = [c for c in comments if not _is_automated_review_content(c.get("body", ""))]
+    logger.info("public_comments_after_automated_filter", owner=owner, repo=repo, count=len(comments))
 
     comment_ids = [c["id"] for c in comments]
     async with AsyncSessionLocal() as session:
@@ -189,6 +173,8 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
             logger.error("voyage_rate_limit_exhausted_retries", batch=batch_num)
             continue
 
+        batch_ingested = 0
+        batch_skipped = 0
         try:
             async with AsyncSessionLocal() as session:
                 for comment, embedding in zip(batch, embeddings):
@@ -198,7 +184,7 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
 
                     comment_created_at = None
                     if comment.get("created_at"):
-                        comment_created_at=datetime.fromisoformat(comment["created_at"].replace("Z", "+00:00")).replace(tzinfo=None),
+                        comment_created_at = datetime.fromisoformat(comment["created_at"].replace("Z", "+00:00")).replace(tzinfo=None)
 
                     stmt = insert(ReviewComment).values(
                         github_comment_id=comment["id"],
@@ -211,13 +197,14 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
                         body=comment.get("body", ""),
                         author=comment.get("user", {}).get("login", "unknown"),
                         comment_created_at=comment_created_at,
+                        html_url=comment.get("html_url"),
                         embedding=embedding
                     ).on_conflict_do_nothing(index_elements=["github_comment_id"])
                     result = await session.execute(stmt)
                     if result.rowcount > 0:
-                        ingested += 1
+                        batch_ingested += 1
                     else:
-                        skipped += 1
+                        batch_skipped += 1
                 await session.commit()
         except Exception as db_error:
             logger.error(
@@ -226,6 +213,9 @@ async def ingest_public_repository(owner: str, repo: str, max_comments: int = 20
                 error=str(db_error)
             )
             continue
+
+        ingested += batch_ingested
+        skipped += batch_skipped
 
         logger.info(
             "public_batch_ingested",

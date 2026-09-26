@@ -1,0 +1,354 @@
+{
+  "run_at": "2026-09-26T11:41:44.017659",
+  "split_date": "2026-07-10T23:53:59",
+  "repo_pool": [
+    [
+      "psf",
+      "requests"
+    ],
+    [
+      "tiangolo",
+      "fastapi"
+    ],
+    [
+      "pallets",
+      "flask"
+    ],
+    [
+      "encode",
+      "httpx"
+    ],
+    [
+      "pydantic",
+      "pydantic"
+    ]
+  ],
+  "pool_sizes_by_repo": {
+    "psf/requests": 8,
+    "tiangolo/fastapi": 40,
+    "pallets/flask": 7,
+    "encode/httpx": 4,
+    "pydantic/pydantic": 64
+  },
+  "tune_size": 14,
+  "test_size": 24,
+  "tuning_sweep": [
+    {
+      "threshold": 0.45,
+      "tp": 3,
+      "fp": 1,
+      "fn": 11,
+      "precision": 0.75,
+      "recall": 0.214,
+      "f1": 0.333
+    },
+    {
+      "threshold": 0.5,
+      "tp": 3,
+      "fp": 1,
+      "fn": 11,
+      "precision": 0.75,
+      "recall": 0.214,
+      "f1": 0.333
+    },
+    {
+      "threshold": 0.55,
+      "tp": 1,
+      "fp": 3,
+      "fn": 13,
+      "precision": 0.25,
+      "recall": 0.071,
+      "f1": 0.111
+    },
+    {
+      "threshold": 0.6,
+      "tp": 0,
+      "fp": 4,
+      "fn": 14,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.65,
+      "tp": 0,
+      "fp": 4,
+      "fn": 14,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.7,
+      "tp": 0,
+      "fp": 4,
+      "fn": 14,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.75,
+      "tp": 0,
+      "fp": 4,
+      "fn": 14,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    }
+  ],
+  "floor_selected": 0.45,
+  "final_metrics": {
+    "floor": 0.45,
+    "tp": 0,
+    "fp": 2,
+    "fn": 24,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": null
+  },
+  "no_retrieval_match_count": 17,
+  "no_retrieval_match_pct": 70.8,
+  "test_sample_results": [
+    {
+      "sample_id": "ffbd977d-3a8b-4c92-a2d8-703e55b33a4e",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\ud83d\udccc **MEDIUM** \u2014 *test_coverage*  \n**Confidence:** 70%  \n\nModified behaviour without updated assertions: The `Request` class's `__init__` method now uses the new `HeadersType` without updating the corresponding tests.\n\n**Suggested fix:**\n```\nUpdate the tests for the `Request` class's `__init__` method to cover the new `HeadersType` logic.\n```",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "780632ca-d08c-4cb1-83be-0495ba589a3c",
+      "had_retrieval": true,
+      "num_concerns": 1,
+      "best_similarity": 0.45,
+      "best_concern": "Including `None` in the type union may be inconsistent with the project's preferred handling of optional values",
+      "real_comment": "\u26a0\ufe0f **HIGH** \u2014 *test_coverage*  \n**Confidence:** 80%  \n\nNew logic for handling MutableMapping in Request.headers is not tested.\n\n**Suggested fix:**\n```\nAdd test cases to cover the new logic for handling MutableMapping in Request.headers.\n```",
+      "judge_confirmed": false,
+      "judge_reason": "The predicted concern deals with type\u2011union optional handling, whereas the reviewer comment flags missing test coverage for new MutableMapping logic, so they address different issues."
+    },
+    {
+      "sample_id": "df789b59-0126-4021-91f8-943f33d4037b",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "When considering the behavior of `urllib.request.getproxies()`, which stores the value of the environment variables `no_proxy`/`NO_PROXY` in the key `no`, this code would require to either rename `no_proxy` to `no` or consider both names, e.g.:\n\n```suggestion\n            no_proxy_list = kwargs[\"proxies\"].get(\"no\")\n```\n\nor\n\n```suggestion\n            no_proxy_list = kwargs[\"proxies\"].get(\"no_proxy\") or kwargs[\"proxies\"].get(\"no\")\n```\n\nI personally do have a preference for `no_proxy`, here.\n\nOne way or another, an addition to the documentation of `requests.request` would be good.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "7efbc156-29a0-4b84-b580-203773751fd8",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "The `os.environ.get('NO_PROXY')` ignores the presence of the (lower case) `no_proxy` environment variable.\n\n`getproxies` from urllib, used in src/requests/utils.py@825, does consider upper and lower-case environment variables, so this would create an inconsistency, see e.g. https://docs.python.org/3/library/urllib.request.html#urllib.request.getproxies:\n>  If both lowercase and uppercase environment variables exist (and disagree), lowercase is preferred.\n\nAnother consideration: What if a user omits the `no_proxy`/`no` key in the `proxies` dict with the intention of sending this request through the proxy, given in said `proxies` dict?\n\nA slightly different approach would be, to add the value of `os.environ.get(....)` with respect to upper- and lower-case to the `no` attribute of the fallback-`proxies` dict (line 834) and then only look at said attribute (and/or `no_proxy`, as well).\n\nSo this would result in something like this (somehow I fail making the suggestion  highlighting all lines starting from `proxies = proxies or {}`):\n```suggestion\n    proxies = proxies or {\n        # Respect the percedence of urllib.request.getproxies\n        'no': os.environ.get('no_proxy') or os.environ.get('NO_PROXY')\n    }\n    urlparts = urlparse(url)\n    if urlparts.hostname is None:\n        return proxies.get(urlparts.scheme, proxies.get(\"all\"))\n\n    # Check NO_PROXY from environment first\n    if should_bypass_proxies(url, no_proxy=proxies.get('no')):\n        return None\n```",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "e5ae02cd-f149-42d6-b0e6-cc9311879adb",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Without this, it would skip installing dev group on `uv sync --locked --no-dev --group docs`, but still install it later on `uv run ./scripts/docs.py build-lang ${{ matrix.lang }}` and then cache it.\nThe same in other workflows",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "0cf97979-03d2-4ef6-b932-3fc77b4bb36b",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "With `cache-suffix: dev-all`, this workflow should install the same dependency set that defines the cache contents (per PR description: `--group dev --extra all`). Right now the install step only uses `--extra all`, which means the `dev-all` cache this job writes/reads may not include dev-group wheels and can reduce cache hit rates across workflows.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "bcdd6ff7-c534-4f70-ab89-5a8eab46c517",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Moved it outside the function.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "915cbaaf-df30-4749-b9f9-88bba79eed0c",
+      "had_retrieval": true,
+      "num_concerns": 1,
+      "best_similarity": 0.566,
+      "best_concern": "The new section adds an introductory paragraph which may create inconsistency with other documentation sections that lack such introductions",
+      "real_comment": "The displayed term inside the <dfn> is capitalized as \"Parsing\", but the canonical docs and other translations use lower-case \"parsing\" (e.g. docs/en/docs/tutorial/query-params.md:27). Using the same casing keeps terminology consistent across languages.",
+      "judge_confirmed": false,
+      "judge_reason": "The predicted concern flags missing introductory paragraphs, whereas the reviewer comment flags term capitalization; they target different consistency issues."
+    },
+    {
+      "sample_id": "6eaa2a37-86f7-4086-88b7-9c45b64d5e69",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "This workflow only needs `prek` installed.\nWe can add a dependency group with just `prek`, use it here and disable cache. But `dev-all` is always warm (see `warm-cache` workflow), so I decided to reuse it instead and just disabled saving.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "fecad4de-fee0-4233-a313-485b87d02a97",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "We need to include `matrix.uv-resolution` into cache key in order to prevent possible future collisions if we have two equal matrix items with only difference in `uv-resolution`.\n\nSee: https://github.com/astral-sh/setup-uv#should-i-include-the-resolution-strategy-in-the-cache-key",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "70eac6be-9fe7-40f0-abf9-f85d8911f9fc",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Ruff 0.16.0 starts linting code inside markdown files.\nWaiting for Sebastian to decide what to do with it. Pinned it to `<0.16.0` until then",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "8860d022-1228-4c55-bd49-95f178fa3996",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "`sn_port` changed to int/none, that's the reason for this change",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "71415740-cc96-4e50-a549-7d82113c124a",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Mypy: Redundant cast to \"str\"",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "67b6f516-a0d6-4966-b609-97c8e7558da3",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "That's the part I was unsure about. \r\nHostname can be `None`, so I used the behavior from the werkzeug change you mentioned:\r\n\r\n`hostname = url.hostname or \"localhost\"`",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "518d5847-2be5-4f72-86af-5571039d97ec",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "I added \"//\" to make urlsplit work in this instance. I assume that this won't break anything, but you definitely know more about that.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "f1527602-c226-4ccd-a2c3-1afc8e928ff8",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "I've added a few logics/comments to explain the intention and hope that addresses your concern.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "be192d04-bd6e-4079-8e48-efffa4efc5b8",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0645 \u0628\u0631\u0646\u0627\u0645\u0647 \u062f\u0627\u0646\u0644\u0648\u062f \u06a9\u0646\u0645",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "12d4a700-d07d-46ca-aac9-794dcea41a7e",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\ud83d\udfe1 **\u7ea6\u675f\u5728 schema \u7c7b\u578b\u4e0e\u7ea6\u675f\u503c\u7c7b\u578b\u4e0d\u5339\u914d\u65f6\u88ab\u9759\u9ed8\u5ffd\u7565**\n\n\u5728 _apply_constraint \u4e2d\u5904\u7406 annotated_types.Gt\uff08\u53ca Ge\u3001Lt\u3001Le\u3001MultipleOf\uff09\u65f6\uff0c\u5f53 schema \u7c7b\u578b\u4e3a\u6570\u503c\u578b\uff08int/float/decimal\uff09\u4f46\u7ea6\u675f\u503c\u7c7b\u578b\u4e0d\u5339\u914d\u65f6\uff08\u4f8b\u5982 int \u7c7b\u578b\u7684 schema \u642d\u914d float \u7c7b\u578b\u7684 gt \u503c\uff0c\u5982 validate_as(int).gt(1.5)\uff09\uff0c\u6240\u6709\u5185\u5c42 isinstance \u6761\u4ef6\u90fd\u4e0d\u6ee1\u8db3\uff0c\u4ee3\u7801\u65e2\u4e0d\u4f1a\u8bbe\u7f6e\u5185\u8054\u7ea6\u675f\u4e5f\u4e0d\u4f1a\u56de\u9000\u5230 _check_func \u9a8c\u8bc1\u5668\u51fd\u6570\u3002\u7ed3\u679c\u662f\u7ea6\u675f\u88ab\u9759\u9ed8\u4e22\u5f03\uff0c\u7528\u6237\u4ee5\u4e3a\u7ea6\u675f\u751f\u6548\u4f46\u5b9e\u9645\u4e0a\u6ca1\u6709\u3002\n\n**\u4fee\u590d\u5efa\u8bae\uff1a**\n```\n\u5728\u5185\u5c42\u6761\u4ef6\u4e0d\u5339\u914d\u65f6\u5e94\u56de\u9000\u5230 _check_func \u9a8c\u8bc1\u5668\u8def\u5f84\uff0c\u800c\u975e\u9759\u9ed8\u5ffd\u7565\u3002\u53ef\u4ee5\u5c06\u5185\u5c42 if/elif \u6539\u4e3a else \u5206\u652f\uff0c\u5728\u7c7b\u578b\u4e0d\u5339\u914d\u65f6\u6267\u884c check \u51fd\u6570\u3002\n```\n\n<!-- ai-reviewer-id: 711bdb9a8a52 -->",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "56a8ac4a-51a3-444a-93ef-4bc7d6778dde",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\ud83d\udca1 **\u6d4b\u8bd5\u7528\u4f8b\u901a\u8fc7\u53ef\u53d8\u9ed8\u8ba4\u53c2\u6570\u521d\u59cb\u5316**\n\n`valid_cases` \u53c2\u6570\u9ed8\u8ba4\u503c\u4e3a\u7a7a\u5217\u8868\uff0c\u5e76\u4e14\u540e\u7eed\u6d4b\u8bd5\u76f4\u63a5\u4fee\u6539\u4e86\u8be5\u5217\u8868\u7684\u5185\u5bb9\u3002\u8fd9\u79cd\u505a\u6cd5\u63a9\u76d6\u4e86\u51fd\u6570\u7684\u771f\u5b9e\u8f93\u5165\u4f9d\u8d56\uff0c\u4e14\u5728\u591a\u6b21\u8c03\u7528\u65f6\u6781\u6613\u5f15\u53d1\u96be\u4ee5\u8ffd\u8e2a\u7684\u526f\u4f5c\u7528\u3002\n\n**\u4fee\u590d\u5efa\u8bae\uff1a**\n```\n\u5c06\u9ed8\u8ba4\u503c\u6539\u4e3a\u65e0\u526f\u4f5c\u7528\u7684 `tuple`\uff0c\u6216\u5728\u51fd\u6570\u5185\u4f7f\u7528\u5c40\u90e8\u53ef\u53d8\u53d8\u91cf\u4ece\u800c\u907f\u514d\u4fee\u6539\u5916\u90e8\u9ed8\u8ba4\u53c2\u6570\u3002\n```\n\n<!-- ai-reviewer-id: f4d0f8089aeb -->",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "3552fcb3-d045-4add-a166-a8f9c92c94d1",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\ud83d\udfe1 **ImportError \u540e sys.modules \u4e2d\u6b8b\u7559\u534a\u521d\u59cb\u5316\u6a21\u5757\uff0c\u5f71\u54cd\u540e\u7eed\u5bfc\u5165**\n\n\u91cd\u6784\u540e\u7684 _test_file \u5728 exec_module \u524d\u5148\u628a\u6a21\u5757\u5199\u5165 sys.modules\uff0c\u4f46 except ImportError \u5206\u652f\u53ea return\uff0c\u6ca1\u6709\u628a\u8be5\u6761\u76ee\u79fb\u9664\u3002\u4e00\u65e6\u6a21\u5757\u6267\u884c\u5931\u8d25\uff0c\u540c\u8fdb\u7a0b\u5185\u540e\u7eed\u5bf9\u8be5\u6a21\u5757\u7684\u771f\u5b9e import \u4f1a\u76f4\u63a5\u547d\u4e2d sys.modules \u91cc\u8fd9\u4e2a\u6b8b\u7f3a/\u7a7a\u7684\u6a21\u5757\u5bf9\u8c61\uff0c\u4e0d\u518d\u91cd\u65b0\u6267\u884c\uff0c\u5bfc\u81f4\u540e\u7eed\u6d4b\u8bd5\u62ff\u5230\u4e0d\u5b8c\u6574\u7684 API\uff08\u4f8b\u5982 pydantic.experimental.pipeline \u7f3a\u5931\u5e94\u5bfc\u51fa\u7684\u5c5e\u6027\u5374\u4e0d\u4f1a\u62a5 ImportError\uff09\u3002\u65e7\u4ee3\u7801\u4e0d\u5728 sys.modules \u6ce8\u518c\uff0c\u56e0\u6b64\u5931\u8d25\u4e0d\u4f1a\u6c61\u67d3\u5168\u5c40\u72b6\u6001\u3002\n\n**\u4fee\u590d\u5efa\u8bae\uff1a**\n```\n\u5728 except ImportError \u5206\u652f\u91cc\u6267\u884c sys.modules.pop(module_name, None)\uff08\u6216\u5148\u6267\u884c exec_module \u6210\u529f\u540e\u518d\u6ce8\u518c sys.modules\uff09\uff0c\u786e\u4fdd\u5931\u8d25\u7684\u6a21\u5757\u4e0d\u4f1a\u7559\u5b58\u5728 sys.modules \u4e2d\u3002\n```\n\n<!-- ai-reviewer-id: 4f56e190ce6c -->",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "603f8da2-9bd6-4818-afbf-0013bbec0c59",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\ud83d\udcdd **Nit: \u65e0\u610f\u4e49\u7684 sys.version_info \u7a7a\u5206\u652f**\n\n`if sys.version_info >= (3, 9): pass` \u662f\u4e00\u4e2a\u7a7a\u64cd\u4f5c\u7684\u6b7b\u4ee3\u7801\uff0c\u6ca1\u6709\u4efb\u4f55\u5b9e\u9645\u4f5c\u7528\uff1b\u5b83\u4e5f\u8ba9\u6a21\u5757\u9876\u90e8\u5bf9 sys \u7684 import \u53d8\u6210\u65e0\u7528\u4f9d\u8d56\u3002\n\n**\u4fee\u590d\u5efa\u8bae\uff1a**\n```\n\u5220\u9664\u7b2c 14-15 \u884c\u7684\u7a7a if \u5206\u652f\uff0c\u5e76\u540c\u65f6\u79fb\u9664\u7b2c 5 \u884c\u4e0d\u518d\u4f7f\u7528\u7684 `import sys`\u3002\n```\n\n<!-- ai-reviewer-id: bb34ee83cfce -->",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "97cd3261-8a5a-462e-8ac4-81567cb867ac",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\u2705 **\u4e0d\u518d\u68c0\u6d4b\u5230** - \u8be5\u95ee\u9898\u5728\u6700\u65b0\u53d8\u66f4\u540e\u672a\u88ab\u91cd\u65b0\u68c0\u6d4b\u5230\u3002",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "7b8f3dca-c270-4b78-8308-e470a7274721",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "\u2705 **\u4e0d\u518d\u68c0\u6d4b\u5230** - \u8be5\u95ee\u9898\u5728\u6700\u65b0\u53d8\u66f4\u540e\u672a\u88ab\u91cd\u65b0\u68c0\u6d4b\u5230\u3002",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "4470c717-8983-4ba4-b3e5-7465b0725b5c",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Fine",
+      "judge_confirmed": null,
+      "judge_reason": null
+    }
+  ]
+}

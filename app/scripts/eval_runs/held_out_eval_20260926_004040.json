@@ -1,0 +1,335 @@
+{
+  "run_at": "2026-09-26T00:40:40.452145",
+  "split_date": "2026-07-10T23:53:59",
+  "repo_pool": [
+    [
+      "psf",
+      "requests"
+    ],
+    [
+      "tiangolo",
+      "fastapi"
+    ]
+  ],
+  "tune_size": 15,
+  "test_size": 24,
+  "tuning_sweep": [
+    {
+      "threshold": 0.45,
+      "tp": 4,
+      "fp": 2,
+      "fn": 11,
+      "precision": 0.667,
+      "recall": 0.267,
+      "f1": 0.381
+    },
+    {
+      "threshold": 0.5,
+      "tp": 3,
+      "fp": 3,
+      "fn": 12,
+      "precision": 0.5,
+      "recall": 0.2,
+      "f1": 0.286
+    },
+    {
+      "threshold": 0.55,
+      "tp": 2,
+      "fp": 4,
+      "fn": 13,
+      "precision": 0.333,
+      "recall": 0.133,
+      "f1": 0.19
+    },
+    {
+      "threshold": 0.6,
+      "tp": 2,
+      "fp": 4,
+      "fn": 13,
+      "precision": 0.333,
+      "recall": 0.133,
+      "f1": 0.19
+    },
+    {
+      "threshold": 0.65,
+      "tp": 1,
+      "fp": 5,
+      "fn": 14,
+      "precision": 0.167,
+      "recall": 0.067,
+      "f1": 0.096
+    },
+    {
+      "threshold": 0.7,
+      "tp": 0,
+      "fp": 6,
+      "fn": 15,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.75,
+      "tp": 0,
+      "fp": 6,
+      "fn": 15,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": null
+    }
+  ],
+  "floor_selected": 0.45,
+  "final_metrics": {
+    "floor": 0.45,
+    "tp": 0,
+    "fp": 2,
+    "fn": 24,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": null
+  },
+  "no_retrieval_match_count": 8,
+  "no_retrieval_match_pct": 33.3,
+  "test_sample_results": [
+    {
+      "sample_id": "cd69c348-0cb2-42f9-b35c-6e42352a7f99",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Good catch, you're right. `raw.extend` appends, so a user-set `X-Accel-Buffering` ended up as a second header instead of overriding it.\n\nIt wasn't a deliberate \"you can't turn buffering back on\" decision, I had just mirrored the SSE branch a few lines above, which does the same thing with `Cache-Control` and `X-Accel-Buffering`.\n\nFixed in fe132657d by setting the header after the extend:\n\n```python\nresponse.headers.raw.extend(solved_result.response.headers.raw)\nresponse.headers.setdefault(\"X-Accel-Buffering\", \"no\")\n```\n\nNow the default is still `no`, but a *path operation* that sets the header itself wins, and there's only one copy of it. Added a test for both cases in `tests/test_stream_json_lines_headers.py` and a line in the docs.\n\nOne note while testing it: the header has to be set from a dependency, not from inside the generator body, since the headers are already sent by the time the first item is yielded.\n\nI left the SSE branch as is, changing its behavior feels out of scope for this PR, but happy to do it here too if a maintainer prefers to keep both consistent.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "b52cb6ac-3c3b-49c2-ab6b-a934ae872ecb",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Since version 0.16.0 Ruff started checking code in .md-files by default.\nSo, it wants to add missing empty lines in agent skill files:\n```\nruff format fastapi tests --check\nunformatted: File would be reformatted\n  --> fastapi/.agents/skills/fastapi/references/dependencies.md:1:1\n   |\n57 |\n58 +\n59 | UserNameDep = Annotated[str, Depends(get_username, scope=\"function\")]\n60 |\n61 +\n62 | @app.get(\"/users/me\")\n   |\n\nunformatted: File would be reformatted\n  --> fastapi/.agents/skills/fastapi/references/streaming.md:1:1\n   |\n78 |\n79 +\n80 | @app.get(\"/image\", response_class=PNGStreamingResponse)\n   |\n```\nI think this is useless, so I suggest we disable .md-files formatting",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "e5ae02cd-f149-42d6-b0e6-cc9311879adb",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Without this, it would skip installing dev group on `uv sync --locked --no-dev --group docs`, but still install it later on `uv run ./scripts/docs.py build-lang ${{ matrix.lang }}` and then cache it.\nThe same in other workflows",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "03c25db8-a2d2-43c2-99bd-2c01b8afa95b",
+      "had_retrieval": true,
+      "num_concerns": 1,
+      "best_similarity": 0.628,
+      "best_concern": "The workflow only runs with a single Python version instead of a matrix, missing cross\u2011version validation",
+      "real_comment": "The warm-cache job is meant to populate the `dev-all` cache, but the sync command currently omits `--group dev`. As a result, the default-branch cache may not contain wheels for the dev dependency group that other workflows expect under the `dev-all` cache key.",
+      "judge_confirmed": false,
+      "judge_reason": "The predicted concern is about the workflow\u2019s Python version matrix, while the reviewer\u2019s comment addresses a missing cache group flag, which are unrelated issues"
+    },
+    {
+      "sample_id": "0cf97979-03d2-4ef6-b932-3fc77b4bb36b",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "With `cache-suffix: dev-all`, this workflow should install the same dependency set that defines the cache contents (per PR description: `--group dev --extra all`). Right now the install step only uses `--extra all`, which means the `dev-all` cache this job writes/reads may not include dev-group wheels and can reduce cache hit rates across workflows.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "b58c04dc-662b-4815-8665-8674d8728c2c",
+      "had_retrieval": true,
+      "num_concerns": 1,
+      "best_similarity": 0.347,
+      "best_concern": "The workflow now pins a newer uv version (0.11.30); ensure the CI tests cover this version to catch potential breakages",
+      "real_comment": "`dev` is installed by default, but I still added `--group dev` explicitly in `warm-cache.yml`.\nSo, this has been resolved",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "6cc8ff93-8223-4f12-826e-191d341679bf",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "If there is another call of the same dependency that would use the cache, then it wouldn't find the cached value from this call? (I'm not sure if that is what I would _expect_ to happen, but it is the current behavior.)\n\nImagine the following:\n```py\nasync def needy_dependency(\n    fresh_value: Annotated[str, Depends(get_value, use_cache=False)],\n    cached_value: Annotated[str, Depends(get_value, use_cache=True)],\n):\n```\n\nPreviously `fresh_value` would be resolved and then added to the cache, and `cached_value` would be grabbed from the cache. With the suggested change it would not add the result from `fresh_value` to the cache and have to resolve `cached_value`.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "bcdd6ff7-c534-4f70-ab89-5a8eab46c517",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Moved it outside the function.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "86c54763-eb05-44b6-a981-6c041ce930f5",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Can this be speed up even more by storing `literal_prefix` as a part of `include_context`?",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "f9e3ee3c-56d1-4174-8ec3-90a532df08be",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Heading anchor should match the canonical anchor used across other translations (e.g. docs/en/docs/tutorial/query-params.md:1 uses { #query-parameters }). Keeping stable anchors avoids breaking inbound links when translating the visible text.\n\nThis issue also appears in the following locations of the same file:\n- line 31\n- line 60\n- line 74\n- line 112\n- line 122",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "915cbaaf-df30-4749-b9f9-88bba79eed0c",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "The displayed term inside the <dfn> is capitalized as \"Parsing\", but the canonical docs and other translations use lower-case \"parsing\" (e.g. docs/en/docs/tutorial/query-params.md:27). Using the same casing keeps terminology consistent across languages.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "3f63df34-fd55-4be1-b761-145f142e241f",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "This link points to path-params.md in the same directory, but docs/id/docs/tutorial/ currently only contains query-params.md, so the target file doesn\u2019t exist and the link will be broken. Either add the Indonesian translation for path-params.md, or adjust this link to a valid existing target.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "2726d6c4-9c72-40df-be9a-3f4038086670",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Anchor IDs in translated docs should stay consistent with the English source (and other translations) to avoid breaking inbound links (e.g. `#changing-the-default`). Other languages keep `{ #response-status-code }` unchanged (see `docs/pt/docs/tutorial/response-status-code.md:1`).\n\nThis issue also appears in the following locations of the same file:\n- line 42\n- line 73\n- line 99",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "6eaa2a37-86f7-4086-88b7-9c45b64d5e69",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "This workflow only needs `prek` installed.\nWe can add a dependency group with just `prek`, use it here and disable cache. But `dev-all` is always warm (see `warm-cache` workflow), so I decided to reuse it instead and just disabled saving.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "a95cc706-7d4e-4042-a392-cc6cd9170cf8",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Added explicit dependency install steps so that it would be clear what dependencies are used by the job",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "8f01c700-a43d-424a-9e14-8d188c46f439",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "```suggestion\n          cache-suffix: github-actions\n          enable-cache: true\n```\n\nSince `setup-uv` v10.0.0, cache for this workflow is disabled (it's triggered by `workflow_run`) - see [release notes](https://github.com/astral-sh/setup-uv/releases/tag/v10.0.0).\n\nI think we can safely enable it - we use `workflow_run` trigger with caution:\n* No checkout of untrusted branches\n* Artifacts used safely (just uploading)\n* Narrow permissions (only `statuses: write`)\n* No unpinned dependencies\n* We use Zizmor to ensure workflow security\n* Nothing untrusted can write the cache that this job restores\n\nWe can also consider disabling Smokeshow workflow temporary for FastAPI repo as it always fails due to upload limits.\n",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "fecad4de-fee0-4233-a313-485b87d02a97",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "We need to include `matrix.uv-resolution` into cache key in order to prevent possible future collisions if we have two equal matrix items with only difference in `uv-resolution`.\n\nSee: https://github.com/astral-sh/setup-uv#should-i-include-the-resolution-strategy-in-the-cache-key",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "1486bb9a-1f38-49d4-ac23-21f9ccadd9d7",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "`regression-test` only runs on pull requests, so anything it saved would be PR-scoped and useless. But it will still use cache written by other jobs",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "2834f6a1-aa93-4156-91c4-4f70da5c795c",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Other workflows can't write this cache (for `dev-all` key) because they are either PR-scoped or run too rarely.\nThis workflow will run every day to ensure `dev-all` cache is warm and frequently running `pre-commit` workflow can use it\n",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "70eac6be-9fe7-40f0-abf9-f85d8911f9fc",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "Ruff 0.16.0 starts linting code inside markdown files.\nWaiting for Sebastian to decide what to do with it. Pinned it to `<0.16.0` until then",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "df789b59-0126-4021-91f8-943f33d4037b",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "When considering the behavior of `urllib.request.getproxies()`, which stores the value of the environment variables `no_proxy`/`NO_PROXY` in the key `no`, this code would require to either rename `no_proxy` to `no` or consider both names, e.g.:\n\n```suggestion\n            no_proxy_list = kwargs[\"proxies\"].get(\"no\")\n```\n\nor\n\n```suggestion\n            no_proxy_list = kwargs[\"proxies\"].get(\"no_proxy\") or kwargs[\"proxies\"].get(\"no\")\n```\n\nI personally do have a preference for `no_proxy`, here.\n\nOne way or another, an addition to the documentation of `requests.request` would be good.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "7efbc156-29a0-4b84-b580-203773751fd8",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "The `os.environ.get('NO_PROXY')` ignores the presence of the (lower case) `no_proxy` environment variable.\n\n`getproxies` from urllib, used in src/requests/utils.py@825, does consider upper and lower-case environment variables, so this would create an inconsistency, see e.g. https://docs.python.org/3/library/urllib.request.html#urllib.request.getproxies:\n>  If both lowercase and uppercase environment variables exist (and disagree), lowercase is preferred.\n\nAnother consideration: What if a user omits the `no_proxy`/`no` key in the `proxies` dict with the intention of sending this request through the proxy, given in said `proxies` dict?\n\nA slightly different approach would be, to add the value of `os.environ.get(....)` with respect to upper- and lower-case to the `no` attribute of the fallback-`proxies` dict (line 834) and then only look at said attribute (and/or `no_proxy`, as well).\n\nSo this would result in something like this (somehow I fail making the suggestion  highlighting all lines starting from `proxies = proxies or {}`):\n```suggestion\n    proxies = proxies or {\n        # Respect the percedence of urllib.request.getproxies\n        'no': os.environ.get('no_proxy') or os.environ.get('NO_PROXY')\n    }\n    urlparts = urlparse(url)\n    if urlparts.hostname is None:\n        return proxies.get(urlparts.scheme, proxies.get(\"all\"))\n\n    # Check NO_PROXY from environment first\n    if should_bypass_proxies(url, no_proxy=proxies.get('no')):\n        return None\n```",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "a55a376b-3b17-4295-9ffa-b62a6030dcd3",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "_RoutesList notifies on every list mutation by calling `_mark_routes_changed()`. Several existing APIRouter methods also call `_mark_routes_changed()` immediately after mutating `self.routes` (e.g. `self.routes.append(...)` in `add_api_route`, `include_router`, etc.), which means the version will be bumped twice for a single logical change. That can cause extra cache rebuilds (e.g. a request thread could rebuild candidates after the list append bump and then be forced to rebuild again after the explicit bump). Consider removing the redundant explicit `_mark_routes_changed()` calls in methods that already mutate `self.routes`, or adding a way to mute notifications for internal mutations.",
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "c53f14f3-aa91-4e09-b450-33cac5a667f6",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "real_comment": "This will likely be reverted on next translation sync, because the original English version [uses](https://github.com/fastapi/fastapi/blob/50113da16fec53b66b80d75e80a89296de4fa5a5/docs/en/docs/tutorial/first-steps.md?plain=1#L203) `\\` here",
+      "judge_confirmed": null,
+      "judge_reason": null
+    }
+  ]
+}

@@ -3,7 +3,6 @@ import structlog
 from typing import List, Dict, Any, Optional
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
-from app.services.embedder import embed_single
 from app.services.evaluation import embed_with_retry
 import re
 
@@ -26,7 +25,7 @@ async def find_similar_comments(
         logger.info("hunk_too_short_skipped", hunk_length=len(hunk.strip()))
         return []
 
-    query_vector = embed_single(hunk)
+    query_vector = await embed_with_retry(hunk)
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
     async with AsyncSessionLocal() as session:
@@ -38,6 +37,7 @@ async def find_similar_comments(
                     diff_hunk,
                     body,
                     author,
+                    html_url,
                     1 - (embedding <=> CAST(:query_vector AS vector)) AS similarity
                 FROM review_comments
                 WHERE
@@ -64,6 +64,7 @@ async def find_similar_comments(
             "diff_hunk": row.diff_hunk,
             "body": row.body,
             "author": row.author,
+            "html_url": row.html_url,
             "similarity": round(row.similarity, 3)
         }
         for row in rows
@@ -165,12 +166,16 @@ async def retrieve_for_pr(
     repo_owner: str,
     repo_name: str
 ) -> List[Dict[str, Any]]:
-    """Retrieve similar past review comments for all hunks in a PR diff."""
+    """Retrieve similar past review comments for each hunk in a PR diff,
+    grouped by hunk (as [{"hunk": ..., "matches": [...]}, ...]) so synthesis
+    can be grounded in the specific new code that triggered each retrieval,
+    instead of reasoning over past comments in isolation. Each hunk's
+    matches are already deduplicated by find_similar_comments."""
 
     hunks = split_diff_into_hunks(diff)
     logger.info("pr_hunks_extracted", count=len(hunks))
 
-    all_results = []
+    grouped = []
     for i, hunk in enumerate(hunks):
         if i > 0:
             await asyncio.sleep(20)
@@ -184,19 +189,22 @@ async def retrieve_for_pr(
             )
             for s in similar:
                 s["triggered_by_hunk"] = hunk
-            all_results.extend(similar)
+            grouped.append({"hunk": hunk, "matches": similar})
 
-    deduplicated = deduplicate_by_body(all_results)
     logger.info(
         "pr_retrieval_complete",
         total_hunks=len(hunks),
-        total_matches=len(deduplicated)
+        hunks_with_matches=len(grouped)
     )
-    return deduplicated
+    return grouped
 
 
 def split_diff_into_hunks(diff: str) -> List[str]:
-    """Split a raw git diff string into individual hunks for embedding."""
+    """Split a raw git diff string into individual hunks for embedding.
+
+    Lines before the first "@@" (the "diff --git"/"index"/"---"/"+++" file
+    header) are diff metadata, not code — discarded so they never become a
+    bogus pseudo-hunk that gets embedded and sent through retrieval/synthesis."""
 
     hunks = []
     current_hunk = []
@@ -205,7 +213,7 @@ def split_diff_into_hunks(diff: str) -> List[str]:
             if current_hunk:
                 hunks.append("\n".join(current_hunk))
             current_hunk = [line]
-        else:
+        elif current_hunk:
             current_hunk.append(line)
     if current_hunk:
         hunks.append("\n".join(current_hunk))

@@ -18,17 +18,22 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
         diff = asyncio.run(fetch_pr_diff(owner, repo_name, pr_number))
 
         asyncio.run(engine.dispose())
-        similar_comments = asyncio.run(
+        hunk_groups = asyncio.run(
             retrieve_for_pr(diff, owner, repo_name)
         )
+        total_matches = sum(len(g["matches"]) for g in hunk_groups)
 
         logger.info(
             "retrieval_complete",
             pr_number=pr_number,
-            similar_comments_found=len(similar_comments)
+            hunks_with_matches=len(hunk_groups),
+            similar_comments_found=total_matches
         )
 
-        feedback = asyncio.run(synthesize_feedback(similar_comments))
+        feedback = []
+        for group in hunk_groups:
+            hunk_feedback = asyncio.run(synthesize_feedback(group["hunk"], group["matches"]))
+            feedback.extend(hunk_feedback)
 
         logger.info(
             "synthesis_complete",
@@ -38,13 +43,13 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
 
         asyncio.run(engine.dispose())
         posted = asyncio.run(
-            post_pr_comment(owner, repo_name, pr_number, feedback, similar_comments)
+            post_pr_comment(owner, repo_name, pr_number, feedback)
         )
 
         logger.info(
             "process_pr_complete",
             pr_number=pr_number,
-            similar_comments_found=len(similar_comments),
+            similar_comments_found=total_matches,
             concerns_identified=len(feedback),
             comment_posted=posted
         )
@@ -52,7 +57,7 @@ def process_pr(self, pr_number: int, repo_name: str, owner: str):
         return {
             "status": "complete",
             "pr_number": pr_number,
-            "similar_comments_found": len(similar_comments),
+            "similar_comments_found": total_matches,
             "concerns_identified": len(feedback),
             "comment_posted": posted
         }

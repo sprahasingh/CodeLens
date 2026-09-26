@@ -1,33 +1,34 @@
-import json
 import structlog
-from google import genai
 from typing import List, Dict, Any
-from app.core.config import settings
+from app.services.llm_client import call_groq_json
 
 logger = structlog.get_logger()
 
-client = genai.Client(api_key=settings.gemini_api_key)
-
-SYNTHESIS_MODEL = "gemini-3.6-flash"
-
 SYNTHESIS_PROMPT = """You are a senior software engineer reviewing a pull request.
-You have been given a list of similar past review comments that were left on code similar to what appears in this new PR.
-Each comment has an index number.
+
+The new code being reviewed:
+```
+{hunk}
+```
+
+You have been given a list of past review comments that were left on code similar to the new code above. Each comment has an index number.
 
 Past review comments retrieved:
 {comments}
 
-For each distinct concern you identify, respond with a JSON array where each item has exactly these fields:
-- concern: brief description of the issue (1 sentence)
+For each distinct concern that genuinely applies to the specific new code shown above, add an item to a "concerns" array where each item has exactly these fields:
+- concern: brief description of the issue (1 sentence), specific to what is actually in the new code above
 - evidence: what in the past reviews suggests this concern (1 sentence)
 - confidence: float between 0.0 and 1.0
 - suggested_check: specific thing the developer should verify (1 sentence)
 - is_inference: true if inferred from patterns, false if directly stated
 - source_indices: list of integer indices of the past comments that support this concern
 
-Respond with ONLY a valid JSON array. No preamble, no explanation, no markdown.
-Example format:
-[
+Only include a concern if the new code above actually exhibits the issue — a similar past comment existing is not sufficient on its own. If none of the past comments describe an issue that is actually present in the new code, return an empty "concerns" array.
+
+Respond with ONLY a valid JSON object of the form {{"concerns": [...]}}. No preamble, no explanation, no markdown.
+Example:
+{{"concerns": [
   {{
     "concern": "Missing error handling for database queries",
     "evidence": "Past reviewers flagged similar database calls that returned None silently",
@@ -36,10 +37,11 @@ Example format:
     "is_inference": false,
     "source_indices": [0, 2]
   }}
-]"""
+]}}"""
 
 
 async def synthesize_feedback(
+    hunk: str,
     similar_comments: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     if not similar_comments:
@@ -51,38 +53,33 @@ async def synthesize_feedback(
         for i, c in enumerate(similar_comments)
     ])
 
-    prompt = SYNTHESIS_PROMPT.format(comments=comments_text)
+    prompt = SYNTHESIS_PROMPT.format(hunk=hunk, comments=comments_text)
 
-    try:
-        response = client.models.generate_content(
-            model=SYNTHESIS_MODEL,
-            contents=prompt
-        )
-        raw = response.text.strip()
-
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
-        feedback = json.loads(raw)
-
-        for item in feedback:
-            indices = item.get("source_indices", [])
-            item["source_comments"] = [
-                similar_comments[i]
-                for i in indices
-                if i < len(similar_comments)
-            ]
-
-        logger.info(
-            "synthesis_complete",
-            input_comments=len(similar_comments),
-            output_concerns=len(feedback)
-        )
-        return feedback
-
-    except Exception as e:
-        logger.error("synthesis_failed", error=str(e))
+    result = await call_groq_json(prompt)
+    if result is None:
+        logger.error("synthesis_failed")
         return []
+
+    raw_feedback = result.get("concerns", [])
+
+    # A concern with no text can't be embedded, matched, judged, or rendered
+    # downstream — drop it here so every consumer can assume concern is non-empty.
+    feedback = [
+        item for item in raw_feedback
+        if isinstance(item.get("concern"), str) and item["concern"].strip()
+    ]
+
+    for item in feedback:
+        indices = item.get("source_indices", [])
+        item["source_comments"] = [
+            similar_comments[i]
+            for i in indices
+            if isinstance(i, int) and 0 <= i < len(similar_comments)
+        ]
+
+    logger.info(
+        "synthesis_complete",
+        input_comments=len(similar_comments),
+        output_concerns=len(feedback)
+    )
+    return feedback

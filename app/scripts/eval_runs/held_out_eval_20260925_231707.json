@@ -1,0 +1,311 @@
+{
+  "run_at": "2026-09-25T23:17:07.281525",
+  "split_date": "2026-07-10T23:53:59",
+  "repo_pool": [
+    [
+      "psf",
+      "requests"
+    ],
+    [
+      "tiangolo",
+      "fastapi"
+    ]
+  ],
+  "tune_size": 15,
+  "test_size": 24,
+  "tuning_sweep": [
+    {
+      "threshold": 0.45,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.5,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.55,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.6,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.65,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.7,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    },
+    {
+      "threshold": 0.75,
+      "tp": 0,
+      "fp": 0,
+      "fn": 15,
+      "precision": null,
+      "recall": 0.0,
+      "f1": null
+    }
+  ],
+  "floor_selected": 0.45,
+  "final_metrics": {
+    "floor": 0.45,
+    "tp": 0,
+    "fp": 0,
+    "fn": 24,
+    "precision": null,
+    "recall": 0.0,
+    "f1": null
+  },
+  "no_retrieval_match_count": 8,
+  "no_retrieval_match_pct": 33.3,
+  "test_sample_results": [
+    {
+      "sample_id": "cd69c348-0cb2-42f9-b35c-6e42352a7f99",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "b52cb6ac-3c3b-49c2-ab6b-a934ae872ecb",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "e5ae02cd-f149-42d6-b0e6-cc9311879adb",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "03c25db8-a2d2-43c2-99bd-2c01b8afa95b",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "0cf97979-03d2-4ef6-b932-3fc77b4bb36b",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "b58c04dc-662b-4815-8665-8674d8728c2c",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "6cc8ff93-8223-4f12-826e-191d341679bf",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "bcdd6ff7-c534-4f70-ab89-5a8eab46c517",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "86c54763-eb05-44b6-a981-6c041ce930f5",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "f9e3ee3c-56d1-4174-8ec3-90a532df08be",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "915cbaaf-df30-4749-b9f9-88bba79eed0c",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "3f63df34-fd55-4be1-b761-145f142e241f",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "2726d6c4-9c72-40df-be9a-3f4038086670",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "6eaa2a37-86f7-4086-88b7-9c45b64d5e69",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "a95cc706-7d4e-4042-a392-cc6cd9170cf8",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "8f01c700-a43d-424a-9e14-8d188c46f439",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "fecad4de-fee0-4233-a313-485b87d02a97",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "1486bb9a-1f38-49d4-ac23-21f9ccadd9d7",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "2834f6a1-aa93-4156-91c4-4f70da5c795c",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "70eac6be-9fe7-40f0-abf9-f85d8911f9fc",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "df789b59-0126-4021-91f8-943f33d4037b",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "7efbc156-29a0-4b84-b580-203773751fd8",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "a55a376b-3b17-4295-9ffa-b62a6030dcd3",
+      "had_retrieval": false,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    },
+    {
+      "sample_id": "c53f14f3-aa91-4e09-b450-33cac5a667f6",
+      "had_retrieval": true,
+      "num_concerns": 0,
+      "best_similarity": null,
+      "best_concern": null,
+      "judge_confirmed": null,
+      "judge_reason": null
+    }
+  ]
+}

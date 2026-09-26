@@ -15,4 +15,5 @@ flower
 redis
 voyageai
 pgvector
-google-genai
+pytest
+pytest-asyncio
