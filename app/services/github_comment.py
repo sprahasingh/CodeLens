@@ -48,12 +48,14 @@ def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
 
 
 def format_feedback_as_markdown(
-    feedback: List[Dict[str, Any]]
+    feedback: List[Dict[str, Any]],
+    similar_count: int = 0
 ) -> str:
     if not feedback:
         return ""
 
-    lines = [COMMENT_HEADER]
+    matched_note = f"*{similar_count} similar past pattern{'s' if similar_count != 1 else ''} retrieved from corpus.*\n\n" if similar_count > 0 else ""
+    lines = [COMMENT_HEADER + matched_note]
 
     for i, item in enumerate(feedback, 1):
         confidence_pct = int(item.get("confidence", 0) * 100)
@@ -138,21 +140,24 @@ async def save_predictions(
         count=len(feedback)
     )
 
-NO_CONCERNS_BODY = (
-    "## CodeLens Pre-Review Analysis\n\n"
-    "No concerns found for this PR — no similar past review patterns matched the changes above the confidence threshold.\n\n"
-    "---\n"
-    "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
-)
+def _no_concerns_body(similar_count: int) -> str:
+    matched = f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} found" if similar_count > 0 else "no similar past patterns found"
+    return (
+        "## CodeLens Pre-Review Analysis\n\n"
+        f"No concerns found for this PR — {matched}, but none indicated an issue with the current changes.\n\n"
+        "---\n"
+        "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
+    )
 
 
 async def post_pr_comment(
     owner: str,
     repo: str,
     pr_number: int,
-    feedback: List[Dict[str, Any]]
+    feedback: List[Dict[str, Any]],
+    similar_count: int = 0
 ) -> bool:
-    body = format_feedback_as_markdown(feedback) if feedback else NO_CONCERNS_BODY
+    body = format_feedback_as_markdown(feedback, similar_count) if feedback else _no_concerns_body(similar_count)
 
     try:
         async with await get_github_client() as client:
