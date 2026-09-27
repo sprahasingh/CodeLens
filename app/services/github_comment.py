@@ -63,7 +63,8 @@ def _lang_from_file(filepath: str) -> str:
 def format_feedback_as_markdown(
     feedback: List[Dict[str, Any]],
     similar_count: int = 0,
-    hunks_scanned: int = 0
+    hunks_scanned: int = 0,
+    partial: bool = False
 ) -> str:
     if not feedback:
         return ""
@@ -131,6 +132,8 @@ def format_feedback_as_markdown(
             lines.append("")
 
     lines.append(COMMENT_FOOTER)
+    if partial:
+        lines.append(PARTIAL_NOTICE)
     return "\n".join(lines)
 
 async def save_predictions(
@@ -170,7 +173,14 @@ async def save_predictions(
         count=len(feedback)
     )
 
-def _no_concerns_body(similar_count: int, hunks_scanned: int = 0) -> str:
+PARTIAL_NOTICE = (
+    "\n\n> **Note:** This PR exceeded the analysis time budget. "
+    "The findings above cover the hunks processed before the limit was reached — "
+    "remaining hunks were not reviewed."
+)
+
+
+def _no_concerns_body(similar_count: int, hunks_scanned: int = 0, partial: bool = False) -> str:
     stats_parts = []
     if hunks_scanned:
         stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
@@ -183,13 +193,16 @@ def _no_concerns_body(similar_count: int, hunks_scanned: int = 0) -> str:
     else:
         conclusion = "No concerns found — no similar past patterns matched the changes above the confidence threshold."
 
-    return (
+    body = (
         "## CodeLens Pre-Review Analysis\n\n"
         + stats_line
         + conclusion + "\n\n"
         "---\n"
         "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
     )
+    if partial:
+        body += PARTIAL_NOTICE
+    return body
 
 
 async def post_pr_comment(
@@ -198,9 +211,14 @@ async def post_pr_comment(
     pr_number: int,
     feedback: List[Dict[str, Any]],
     similar_count: int = 0,
-    hunks_scanned: int = 0
+    hunks_scanned: int = 0,
+    partial: bool = False
 ) -> bool:
-    body = format_feedback_as_markdown(feedback, similar_count, hunks_scanned) if feedback else _no_concerns_body(similar_count, hunks_scanned)
+    body = (
+        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, partial)
+        if feedback
+        else _no_concerns_body(similar_count, hunks_scanned, partial)
+    )
 
     try:
         async with await get_github_client() as client:

@@ -1,14 +1,17 @@
 import asyncio
 import structlog
+from billiard.exceptions import SoftTimeLimitExceeded
 from app.core.celery_app import celery_app
 from app.services.github_client import fetch_pr_diff
-from app.services.retrieval import retrieve_for_pr
+from app.services.retrieval import retrieve_for_pr, MAX_HUNKS_PER_PR, EMBED_SLEEP_SECONDS
 from app.services.synthesizer import synthesize_feedback
 from app.services.github_comment import post_pr_comment
 from app.core.database import engine, AsyncSessionLocal
 from app.models.failed_pr import FailedPR
 
 logger = structlog.get_logger()
+
+SYNTHESIS_SLEEP_SECONDS = EMBED_SLEEP_SECONDS * 2
 
 
 async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
@@ -24,26 +27,42 @@ async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
     )
 
     feedback = []
-    for i, group in enumerate(hunk_groups):
-        if i > 0:
-            await asyncio.sleep(10)
-        hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
-        feedback.extend(hunk_feedback)
+    partial = False
+    try:
+        for i, group in enumerate(hunk_groups):
+            if i > 0:
+                await asyncio.sleep(SYNTHESIS_SLEEP_SECONDS)
+            hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
+            feedback.extend(hunk_feedback)
+    except SoftTimeLimitExceeded:
+        partial = True
+        logger.warning(
+            "soft_time_limit_hit_posting_partial",
+            pr_number=pr_number,
+            hunks_processed=len(feedback),
+            concerns_so_far=len(feedback)
+        )
 
-    logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
+    logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback), partial=partial)
 
-    posted = await post_pr_comment(owner, repo_name, pr_number, feedback, similar_count=total_matches, hunks_scanned=total_hunks)
+    posted = await post_pr_comment(
+        owner, repo_name, pr_number, feedback,
+        similar_count=total_matches,
+        hunks_scanned=total_hunks,
+        partial=partial
+    )
 
     logger.info(
         "process_pr_complete",
         pr_number=pr_number,
         similar_comments_found=total_matches,
         concerns_identified=len(feedback),
-        comment_posted=posted
+        comment_posted=posted,
+        partial=partial
     )
 
     return {
-        "status": "complete",
+        "status": "partial" if partial else "complete",
         "pr_number": pr_number,
         "similar_comments_found": total_matches,
         "concerns_identified": len(feedback),
