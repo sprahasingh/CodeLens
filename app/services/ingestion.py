@@ -46,6 +46,9 @@ async def ingest_repository(owner: str, repo: str) -> dict:
 
     for i in range(0, len(comments), BATCH_SIZE):
         batch = comments[i:i + BATCH_SIZE]
+        batch = [c for c in batch if c.get("diff_hunk", "").strip()]
+        if not batch:
+            continue
         hunks = [c["diff_hunk"] for c in batch]
 
         embeddings = embed_texts(hunks)
