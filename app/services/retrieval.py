@@ -1,6 +1,6 @@
 import asyncio
 import structlog
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.evaluation import embed_with_retry
@@ -165,18 +165,19 @@ async def retrieve_for_pr(
     diff: str,
     repo_owner: str,
     repo_name: str
-) -> List[Dict[str, Any]]:
-    """Retrieve similar past review comments for each hunk in a PR diff,
-    grouped by hunk (as [{"hunk": ..., "matches": [...]}, ...]) so synthesis
-    can be grounded in the specific new code that triggered each retrieval,
-    instead of reasoning over past comments in isolation. Each hunk's
-    matches are already deduplicated by find_similar_comments."""
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Retrieve similar past review comments for each hunk in a PR diff.
+
+    Returns (grouped, total_hunks) where grouped is a list of
+    {"hunk": ..., "filepath": ..., "matches": [...]} dicts and total_hunks
+    is the count of all hunks extracted (including those with no matches)."""
 
     hunks = split_diff_into_hunks(diff)
-    logger.info("pr_hunks_extracted", count=len(hunks))
+    total_hunks = len(hunks)
+    logger.info("pr_hunks_extracted", count=total_hunks)
 
     grouped = []
-    for i, hunk in enumerate(hunks):
+    for i, (filepath, hunk) in enumerate(hunks):
         if i > 0:
             await asyncio.sleep(20)
         similar = await find_similar_comments(hunk, repo_owner, repo_name)
@@ -184,40 +185,45 @@ async def retrieve_for_pr(
             logger.info(
                 "hunk_matched",
                 hunk_index=i,
+                filepath=filepath,
                 matches=len(similar),
                 top_similarity=similar[0]["similarity"]
             )
             for s in similar:
                 s["triggered_by_hunk"] = hunk
-            grouped.append({"hunk": hunk, "matches": similar})
+                s["triggered_by_file"] = filepath
+            grouped.append({"hunk": hunk, "filepath": filepath, "matches": similar})
 
     logger.info(
         "pr_retrieval_complete",
-        total_hunks=len(hunks),
+        total_hunks=total_hunks,
         hunks_with_matches=len(grouped)
     )
-    return grouped
+    return grouped, total_hunks
 
 
-def split_diff_into_hunks(diff: str) -> List[str]:
-    """Split a raw git diff string into individual hunks for embedding.
+def split_diff_into_hunks(diff: str) -> List[Tuple[str, str]]:
+    """Split a raw git diff into (filepath, hunk) tuples.
 
-    Lines before the first "@@" (the "diff --git"/"index"/"---"/"+++" file
-    header) are diff metadata, not code — discarded so they never become a
-    bogus pseudo-hunk that gets embedded and sent through retrieval/synthesis."""
+    Tracks the current file from '+++ b/<path>' headers so each hunk carries
+    the file it belongs to. Lines before the first '@@' that are not file
+    headers are diff metadata and are discarded."""
 
-    hunks = []
-    current_hunk = []
+    hunks: List[Tuple[str, str]] = []
+    current_hunk: List[str] = []
+    current_file = ""
     for line in diff.split("\n"):
-        if line.startswith("@@"):
+        if line.startswith("+++ b/"):
+            current_file = line[6:]
+        elif line.startswith("@@"):
             if current_hunk:
-                hunks.append("\n".join(current_hunk))
+                hunks.append((current_file, "\n".join(current_hunk)))
             current_hunk = [line]
         elif current_hunk:
             current_hunk.append(line)
     if current_hunk:
-        hunks.append("\n".join(current_hunk))
-    return [h for h in hunks if len(h.strip()) > 30]
+        hunks.append((current_file, "\n".join(current_hunk)))
+    return [(f, h) for f, h in hunks if len(h.strip()) > 30]
 
 
 def extract_starting_line(hunk: str) -> Optional[int]:
