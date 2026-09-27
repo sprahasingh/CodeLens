@@ -24,13 +24,15 @@ async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
     )
 
     feedback = []
-    for group in hunk_groups:
+    for i, group in enumerate(hunk_groups):
+        if i > 0:
+            await asyncio.sleep(10)
         hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
         feedback.extend(hunk_feedback)
 
     logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
 
-    posted = await post_pr_comment(owner, repo_name, pr_number, feedback)
+    posted = await post_pr_comment(owner, repo_name, pr_number, feedback, similar_count=total_matches)
 
     logger.info(
         "process_pr_complete",
