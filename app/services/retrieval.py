@@ -11,6 +11,8 @@ logger = structlog.get_logger()
 
 SIMILARITY_THRESHOLD = 0.55
 MAX_RESULTS = 5
+MAX_HUNKS_PER_PR = 20       # caps processing on huge PRs; ~20 hunks covers most real-world changes
+EMBED_SLEEP_SECONDS = 5     # delay between Voyage embedding calls to stay within rate limits
 
 
 async def find_similar_comments(
@@ -174,12 +176,15 @@ async def retrieve_for_pr(
 
     hunks = split_diff_into_hunks(diff)
     total_hunks = len(hunks)
+    if len(hunks) > MAX_HUNKS_PER_PR:
+        logger.warning("pr_hunks_capped", original=total_hunks, capped=MAX_HUNKS_PER_PR)
+        hunks = hunks[:MAX_HUNKS_PER_PR]
     logger.info("pr_hunks_extracted", count=total_hunks)
 
     grouped = []
     for i, (filepath, hunk) in enumerate(hunks):
         if i > 0:
-            await asyncio.sleep(20)
+            await asyncio.sleep(EMBED_SLEEP_SECONDS)
         similar = await find_similar_comments(hunk, repo_owner, repo_name)
         if similar:
             logger.info(
@@ -200,6 +205,34 @@ async def retrieve_for_pr(
         hunks_with_matches=len(grouped)
     )
     return grouped, total_hunks
+
+
+async def retrieve_for_hunks(
+    hunks: List[Tuple[str, str]],
+    repo_owner: str,
+    repo_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Retrieve similar past review comments for a pre-split list of (filepath, hunk) tuples.
+    Used by process_pr_batch which receives its batch from the fan-out task."""
+    grouped = []
+    for i, (filepath, hunk) in enumerate(hunks):
+        if i > 0:
+            await asyncio.sleep(EMBED_SLEEP_SECONDS)
+        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+        if similar:
+            logger.info(
+                "hunk_matched",
+                hunk_index=i,
+                filepath=filepath,
+                matches=len(similar),
+                top_similarity=similar[0]["similarity"]
+            )
+            for s in similar:
+                s["triggered_by_hunk"] = hunk
+                s["triggered_by_file"] = filepath
+            grouped.append({"hunk": hunk, "filepath": filepath, "matches": similar})
+    logger.info("batch_retrieval_complete", grouped_hunks=len(grouped), total_hunks=len(hunks))
+    return grouped, len(hunks)
 
 
 def split_diff_into_hunks(diff: str) -> List[Tuple[str, str]]:
