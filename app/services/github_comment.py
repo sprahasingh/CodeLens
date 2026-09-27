@@ -49,56 +49,71 @@ def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
 
 def format_feedback_as_markdown(
     feedback: List[Dict[str, Any]],
-    similar_count: int = 0
+    similar_count: int = 0,
+    hunks_scanned: int = 0
 ) -> str:
     if not feedback:
         return ""
 
-    matched_note = f"*{similar_count} similar past pattern{'s' if similar_count != 1 else ''} retrieved from corpus.*\n\n" if similar_count > 0 else ""
-    lines = [COMMENT_HEADER + matched_note]
+    lines = [COMMENT_HEADER]
+
+    stats_parts = []
+    if hunks_scanned:
+        stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
+    if similar_count:
+        stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} matched")
+    if stats_parts:
+        lines.append(f"*{' · '.join(stats_parts)}*\n")
 
     for i, item in enumerate(feedback, 1):
         confidence_pct = int(item.get("confidence", 0) * 100)
         is_inference = item.get("is_inference", False)
         inference_tag = " *(inferred)*" if is_inference else ""
-
-        lines.append(f"---")
-        lines.append(f"### Finding {i}: {item.get('concern', '')}{inference_tag}")
-        lines.append(f"**Confidence:** {confidence_pct}% | **Suggested check:** {item.get('suggested_check', '')}")
-        lines.append("")
-
         source_comments = item.get("source_comments", [])
 
+        lines.append("---\n")
+        lines.append(f"### Finding {i}: {item.get('concern', '')}{inference_tag}")
+
         if source_comments:
-            for sc in source_comments:
-                triggered_by = sc.get('triggered_by_hunk', '')
-                if triggered_by:
-                    current_preview = extract_relevant_lines(triggered_by)
-                    if current_preview:
-                        lines.append("**Your code (this PR):**")
-                        lines.append("")
-                        lines.append("```python")
-                        lines.append(current_preview)
-                        lines.append("```")
-                        lines.append("")
-                        break
+            sc0 = source_comments[0]
+            triggered_file = sc0.get("triggered_by_file", "")
+            line_num = extract_starting_line(sc0.get("triggered_by_hunk", ""))
+            loc_parts = []
+            if triggered_file:
+                loc_parts.append(f"`{triggered_file}`")
+            if line_num:
+                loc_parts.append(f"line {line_num}")
+            if loc_parts:
+                lines.append(f"**Location:** {' · '.join(loc_parts)}")
 
-            for sc in source_comments:
-                line_ref = f" line {sc['line']}" if sc.get('line') else ""
-                past_preview = extract_relevant_lines(sc.get('diff_hunk', ''))
-                lines.append(f"**Similar past code** — `{sc['path']}`{line_ref} (similarity: {sc['similarity']:.0%}):")
-                lines.append("")
-                if past_preview:
+        lines.append(f"**Confidence:** {confidence_pct}% | **Suggested check:** {item.get('suggested_check', '')}\n")
+
+        if source_comments:
+            triggered_by = source_comments[0].get("triggered_by_hunk", "")
+            if triggered_by:
+                preview = extract_relevant_lines(triggered_by)
+                if preview:
+                    lines.append("**Your code (this PR):**\n")
                     lines.append("```python")
-                    lines.append(past_preview)
-                    lines.append("```")
-                    lines.append("")
-                source_link = f" ([view original]({sc['html_url']}))" if sc.get('html_url') else ""
-                lines.append(f"**Past reviewer said:** *\"{sc['body']}\"*{source_link}")
-                lines.append("")
+                    lines.append(preview)
+                    lines.append("```\n")
 
-        lines.append(f"**Evidence:** {item.get('evidence', '')}")
-        lines.append("")
+        lines.append(f"**Evidence:** {item.get('evidence', '')}\n")
+
+        if source_comments:
+            n = len(source_comments)
+            lines.append(f"**Past reviews that triggered this ({n} match{'es' if n != 1 else ''}):**")
+            lines.append("| Similarity | File | Reviewer comment | Link |")
+            lines.append("|---|---|---|---|")
+            for sc in source_comments:
+                sim = f"{sc['similarity']:.0%}"
+                path = f"`{sc['path']}`" if sc.get("path") else "—"
+                body = sc.get("body", "").replace("\n", " ").replace("|", "\\|").strip()
+                if len(body) > 90:
+                    body = body[:90] + "..."
+                link = f"[view]({sc['html_url']})" if sc.get("html_url") else "—"
+                lines.append(f"| {sim} | {path} | *\"{body}\"* | {link} |")
+            lines.append("")
 
     lines.append(COMMENT_FOOTER)
     return "\n".join(lines)
@@ -140,11 +155,23 @@ async def save_predictions(
         count=len(feedback)
     )
 
-def _no_concerns_body(similar_count: int) -> str:
-    matched = f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} found" if similar_count > 0 else "no similar past patterns found"
+def _no_concerns_body(similar_count: int, hunks_scanned: int = 0) -> str:
+    stats_parts = []
+    if hunks_scanned:
+        stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
+    if similar_count > 0:
+        stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} found")
+    stats_line = f"*{' · '.join(stats_parts)}*\n\n" if stats_parts else ""
+
+    if similar_count > 0:
+        conclusion = "No actionable concerns found — similar patterns were retrieved but none applied to the current changes."
+    else:
+        conclusion = "No concerns found — no similar past patterns matched the changes above the confidence threshold."
+
     return (
         "## CodeLens Pre-Review Analysis\n\n"
-        f"No concerns found for this PR — {matched}, but none indicated an issue with the current changes.\n\n"
+        + stats_line
+        + conclusion + "\n\n"
         "---\n"
         "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
     )
@@ -155,9 +182,10 @@ async def post_pr_comment(
     repo: str,
     pr_number: int,
     feedback: List[Dict[str, Any]],
-    similar_count: int = 0
+    similar_count: int = 0,
+    hunks_scanned: int = 0
 ) -> bool:
-    body = format_feedback_as_markdown(feedback, similar_count) if feedback else _no_concerns_body(similar_count)
+    body = format_feedback_as_markdown(feedback, similar_count, hunks_scanned) if feedback else _no_concerns_body(similar_count, hunks_scanned)
 
     try:
         async with await get_github_client() as client:

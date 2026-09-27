@@ -13,7 +13,7 @@ logger = structlog.get_logger()
 
 async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
     diff = await fetch_pr_diff(owner, repo_name, pr_number)
-    hunk_groups = await retrieve_for_pr(diff, owner, repo_name)
+    hunk_groups, total_hunks = await retrieve_for_pr(diff, owner, repo_name)
     total_matches = sum(len(g["matches"]) for g in hunk_groups)
 
     logger.info(
@@ -32,7 +32,7 @@ async def _process_pr_async(pr_number: int, repo_name: str, owner: str) -> dict:
 
     logger.info("synthesis_complete", pr_number=pr_number, concerns_identified=len(feedback))
 
-    posted = await post_pr_comment(owner, repo_name, pr_number, feedback, similar_count=total_matches)
+    posted = await post_pr_comment(owner, repo_name, pr_number, feedback, similar_count=total_matches, hunks_scanned=total_hunks)
 
     logger.info(
         "process_pr_complete",
