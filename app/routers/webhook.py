@@ -82,8 +82,14 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
                 )
                 return {"status": "duplicate_skipped"}
 
-            process_pr.delay(pr_number, repo_name, owner)
-            logger.info("pr_job_queued", pr_number=pr_number, repo=repo_name, head_sha=head_sha)
+            if action == "synchronize":
+                before_sha = payload.get("before")
+                after_sha = payload.get("after")
+                process_pr.delay(pr_number, repo_name, owner, before_sha=before_sha, after_sha=after_sha)
+            else:
+                process_pr.delay(pr_number, repo_name, owner)
+
+            logger.info("pr_job_queued", pr_number=pr_number, repo=repo_name, head_sha=head_sha, action=action)
             return {"status": "queued"}
 
     if gh_event == "pull_request_review_comment":
