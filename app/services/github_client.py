@@ -103,6 +103,24 @@ async def fetch_pr_diff(owner: str, repo: str, pr_number: int) -> str:
         return response.text
 
 
+async def fetch_compare_diff(owner: str, repo: str, before_sha: str, after_sha: str) -> str:
+    """Fetch the diff between two commits — used on push to an open PR so only
+    the newly pushed changes are scanned, not the entire PR diff."""
+    async with await get_github_client() as client:
+        response = await client.get(
+            f"/repos/{owner}/{repo}/compare/{before_sha}...{after_sha}",
+            headers={"Accept": "application/vnd.github.v3.diff"}
+        )
+        response.raise_for_status()
+        await check_rate_limit(response)
+        logger.info(
+            "compare_diff_fetched",
+            owner=owner, repo=repo,
+            before=before_sha[:7], after=after_sha[:7]
+        )
+        return response.text
+
+
 async def fetch_pr_review_comments(owner: str, repo: str, pr_number: int) -> list:
     async with await get_github_client() as client:
         comments = await paginate(
