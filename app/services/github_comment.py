@@ -47,6 +47,19 @@ def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
     return preview
 
 
+_EXT_TO_LANG = {
+    ".py": "python", ".ts": "typescript", ".tsx": "typescript",
+    ".js": "javascript", ".jsx": "javascript", ".go": "go",
+    ".rs": "rust", ".java": "java", ".rb": "ruby", ".cs": "csharp",
+    ".cpp": "cpp", ".c": "c", ".sh": "bash", ".yaml": "yaml",
+    ".yml": "yaml", ".json": "json", ".sql": "sql", ".md": "markdown",
+}
+
+def _lang_from_file(filepath: str) -> str:
+    ext = "." + filepath.rsplit(".", 1)[-1] if "." in filepath else ""
+    return _EXT_TO_LANG.get(ext, "")
+
+
 def format_feedback_as_markdown(
     feedback: List[Dict[str, Any]],
     similar_count: int = 0,
@@ -90,11 +103,13 @@ def format_feedback_as_markdown(
 
         if source_comments:
             triggered_by = source_comments[0].get("triggered_by_hunk", "")
+            triggered_file = source_comments[0].get("triggered_by_file", "")
             if triggered_by:
                 preview = extract_relevant_lines(triggered_by)
                 if preview:
+                    lang = _lang_from_file(triggered_file)
                     lines.append("**Your code (this PR):**\n")
-                    lines.append("```python")
+                    lines.append(f"```{lang}")
                     lines.append(preview)
                     lines.append("```\n")
 
