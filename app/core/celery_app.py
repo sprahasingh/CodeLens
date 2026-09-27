@@ -29,8 +29,8 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     broker_connection_retry_on_startup=True,
-    task_soft_time_limit=1500,  # 25 min: triggers SoftTimeLimitExceeded so partial results can be posted
-    task_time_limit=1800,       # 30 min: hard kill if soft limit handler also hangs
+    task_soft_time_limit=600,   # 10 min: each batch is ≤10 hunks, well within budget
+    task_time_limit=900,        # 15 min: hard kill if soft limit handler hangs
 
     redis_backend_use_ssl={
         "ssl_cert_reqs": "required"

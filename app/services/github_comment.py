@@ -64,6 +64,8 @@ def format_feedback_as_markdown(
     feedback: List[Dict[str, Any]],
     similar_count: int = 0,
     hunks_scanned: int = 0,
+    batch_num: int = 0,
+    total_batches: int = 0,
     partial: bool = False
 ) -> str:
     if not feedback:
@@ -72,6 +74,8 @@ def format_feedback_as_markdown(
     lines = [COMMENT_HEADER]
 
     stats_parts = []
+    if total_batches > 1:
+        stats_parts.append(f"Batch {batch_num} of {total_batches}")
     if hunks_scanned:
         stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
     if similar_count:
@@ -180,8 +184,16 @@ PARTIAL_NOTICE = (
 )
 
 
-def _no_concerns_body(similar_count: int, hunks_scanned: int = 0, partial: bool = False) -> str:
+def _no_concerns_body(
+    similar_count: int,
+    hunks_scanned: int = 0,
+    batch_num: int = 0,
+    total_batches: int = 0,
+    partial: bool = False
+) -> str:
     stats_parts = []
+    if total_batches > 1:
+        stats_parts.append(f"Batch {batch_num} of {total_batches}")
     if hunks_scanned:
         stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
     if similar_count > 0:
@@ -212,12 +224,14 @@ async def post_pr_comment(
     feedback: List[Dict[str, Any]],
     similar_count: int = 0,
     hunks_scanned: int = 0,
+    batch_num: int = 0,
+    total_batches: int = 0,
     partial: bool = False
 ) -> bool:
     body = (
-        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, partial)
+        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, batch_num, total_batches, partial)
         if feedback
-        else _no_concerns_body(similar_count, hunks_scanned, partial)
+        else _no_concerns_body(similar_count, hunks_scanned, batch_num, total_batches, partial)
     )
 
     try:
