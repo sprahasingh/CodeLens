@@ -29,6 +29,7 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    task_time_limit=300,
     redis_backend_use_ssl={
         "ssl_cert_reqs": "required"
     }
