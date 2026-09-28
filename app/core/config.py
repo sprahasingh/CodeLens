@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     voyage_api_key: str
     webhook_secret: str = ""
     groq_api_key: str
+    ntfy_topic: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

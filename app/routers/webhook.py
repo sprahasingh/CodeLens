@@ -1,6 +1,7 @@
 import hmac
 import hashlib
 import structlog
+import httpx
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from sqlalchemy.dialects.postgresql import insert
 from app.tasks.pr_tasks import process_pr
@@ -116,7 +117,39 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
             )
             return {"status": "ground_truth_recorded"}
 
+    if gh_event == "installation":
+        action = payload.get("action")
+        if action == "created":
+            account = payload.get("installation", {}).get("account", {})
+            login = account.get("login", "unknown")
+            account_type = account.get("type", "unknown")
+            repos_selected = payload.get("installation", {}).get("repository_selection", "unknown")
+            repo_count = len(payload.get("repositories", []))
+            logger.info("app_installed", account=login, type=account_type, repos=repos_selected)
+            background_tasks.add_task(_notify_installation, login, account_type, repos_selected, repo_count)
+        return {"status": "ok"}
+
     return {"status": "ignored"}
+
+
+async def _notify_installation(login: str, account_type: str, repos_selected: str, repo_count: int):
+    if not settings.ntfy_topic:
+        return
+    repo_info = f"{repo_count} repo{'s' if repo_count != 1 else ''}" if repos_selected == "selected" else "all repos"
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://ntfy.sh/{settings.ntfy_topic}",
+                content=f"{login} ({account_type}) installed CodeLens on {repo_info}",
+                headers={
+                    "Title": "New CodeLens Installation",
+                    "Priority": "high",
+                    "Tags": "rocket",
+                },
+                timeout=10,
+            )
+    except Exception as e:
+        logger.warning("ntfy_notification_failed", error=str(e))
 
 
 @router.post("/ingest/{owner}/{repo}")
