@@ -6,6 +6,19 @@ Historical PR review retrieval and code-grounded pre-review feedback for GitHub,
 
 I built this because I kept running into the same problem: you open a PR and wait for a senior engineer to point out something that's already been flagged repeatedly on similar code. CodeLens indexes historical PR review comments, grounds them to the exact code they were left on, and posts a synthesized pre-review briefing when a new PR opens. I backed it with a real, measured evaluation loop instead of just claiming it works.
 
+## Contents
+
+- [The core idea](#the-core-idea-hunk-grounded-retrieval)
+- [Architecture](#architecture)
+- [Example output](#example-output)
+- [Tech stack](#tech-stack)
+- [Evaluation](#evaluation)
+- [Known limitations](#known-limitations)
+- [Why Groq](#why-groq)
+- [Repository structure](#repository-structure)
+- [Running it](#running-it)
+- [Scaling this further](#scaling-this-further)
+
 ## The core idea: hunk-grounded retrieval
 
 My first instinct was to embed the review comment text itself and search over that. It doesn't work well. It retrieves generic advice like "add a test" or "handle the error" with no way to tell whether that advice actually applies to the specific new code being reviewed.
@@ -15,25 +28,23 @@ GitHub's review-comment API pairs every historical comment with the exact code i
 ## Architecture
 
 ```mermaid
-flowchart LR
-    A[PR opened / pushed] --> B[GitHub webhook\nsignature + idempotency check]
-    B --> C[process_pr task\nfetch diff]
-    C --> D{synchronize?}
-    D -- yes --> E[fetch delta diff\nbefore...after SHA]
-    D -- no --> F[fetch full PR diff]
-    E & F --> G[split into hunks\nfilter noise]
-    G --> H[fan-out: N batches\nof 10 hunks each]
-    H --> I[process_pr_batch x N\nin parallel]
-    I --> J[embed + pgvector search\nVoyage voyage-code-4]
-    J --> K[LLM synthesis\nGroq]
-    K --> L[post PR comment\nconcern, confidence, evidence, link]
+flowchart TD
+    A[PR opened / pushed] --> B[webhook: signature + idempotency]
+    B --> C{synchronize?}
+    C -- yes --> D[delta diff: before...after SHA]
+    C -- no --> E[full PR diff]
+    D & E --> F[split into hunks · filter noise]
+    F --> G[fan-out: N × process_pr_batch in parallel]
+    G --> H[embed with voyage-code-4 · pgvector search]
+    H --> I[LLM synthesis · Groq]
+    I --> J[post PR comment with findings + evidence links]
 ```
 
 Large PRs are split into independent batches of 10 hunks and queued simultaneously. Each batch posts its own comment as soon as it finishes, so feedback from the first completed batch typically appears within 30 seconds. On `synchronize` events (new commits pushed to an open PR), CodeLens uses GitHub's three-dot compare endpoint to scan only the newly pushed commits, not the entire PR diff again. If a batch hits its time limit, whatever was synthesized gets posted immediately with a partial indicator so nothing is lost silently.
 
 The posted comment shows its work. Every finding links back to the specific historical GitHub comment that informed it, providing provenance for the generated feedback.
 
-What the pipeline actually does:
+### What the pipeline does
 
 - Ingests historical PR review comments paired with their `diff_hunk`
 - Embeds historical and new PR hunks with `voyage-code-4` and retrieves matches above the similarity floor
