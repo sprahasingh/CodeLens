@@ -6,18 +6,20 @@ Historical PR review retrieval and code-grounded pre-review feedback for GitHub,
 
 I built this because I kept running into the same problem: you open a PR and wait for a senior engineer to point out something that's already been flagged repeatedly on similar code. CodeLens indexes historical PR review comments, grounds them to the exact code they were left on, and posts a synthesized pre-review briefing when a new PR opens. I backed it with a real, measured evaluation loop instead of just claiming it works.
 
-## Contents
+## Table of Contents
 
-- [The core idea](#the-core-idea-hunk-grounded-retrieval)
-- [Architecture](#architecture)
-- [Example output](#example-output)
-- [Tech stack](#tech-stack)
-- [Evaluation](#evaluation)
-- [Known limitations](#known-limitations)
-- [Why Groq](#why-groq)
-- [Repository structure](#repository-structure)
-- [Running it](#running-it)
-- [Scaling this further](#scaling-this-further)
+| | Section |
+|---|---|
+| 01 | [The Core Idea](#the-core-idea-hunk-grounded-retrieval) |
+| 02 | [Architecture](#architecture) |
+| 03 | [Example Output](#example-output) |
+| 04 | [Tech Stack](#tech-stack) |
+| 05 | [Evaluation](#evaluation) |
+| 06 | [Known Limitations](#known-limitations) |
+| 07 | [Why Groq](#why-groq) |
+| 08 | [Repository Structure](#repository-structure) |
+| 09 | [Running It](#running-it) |
+| 10 | [Scaling This Further](#scaling-this-further) |
 
 ## The core idea: hunk-grounded retrieval
 
