@@ -8,18 +8,18 @@ I built this because I kept running into the same problem: you open a PR and wai
 
 ## Table of Contents
 
-| | Section |
-|---|---|
-| 01 | [The Core Idea](#the-core-idea-hunk-grounded-retrieval) |
-| 02 | [Architecture](#architecture) |
-| 03 | [Example Output](#example-output) |
-| 04 | [Tech Stack](#tech-stack) |
-| 05 | [Evaluation](#evaluation) |
-| 06 | [Known Limitations](#known-limitations) |
-| 07 | [Why Groq](#why-groq) |
-| 08 | [Repository Structure](#repository-structure) |
-| 09 | [Running It](#running-it) |
-| 10 | [Scaling This Further](#scaling-this-further) |
+|     | Section                                                 |
+| --- | ------------------------------------------------------- |
+| 01  | [The Core Idea](#the-core-idea-hunk-grounded-retrieval) |
+| 02  | [Architecture](#architecture)                           |
+| 03  | [Example Output](#example-output)                       |
+| 04  | [Tech Stack](#tech-stack)                               |
+| 05  | [Evaluation](#evaluation)                               |
+| 06  | [Known Limitations](#known-limitations)                 |
+| 07  | [Why Groq](#why-groq)                                   |
+| 08  | [Repository Structure](#repository-structure)           |
+| 09  | [Running It](#running-it)                               |
+| 10  | [Scaling This Further](#scaling-this-further)           |
 
 ## The core idea: hunk-grounded retrieval
 
@@ -72,11 +72,12 @@ What CodeLens posted as a PR comment:
 
 > ## CodeLens Pre-Review Analysis
 >
-> *1 hunk scanned · 5 similar past patterns matched*
+> _1 hunk scanned · 5 similar past patterns matched_
 >
 > ---
 >
-> ### Finding 1: Adding a cache-suffix without enabling the cache may leave caching disabled for this job *(inferred)*
+> ### Finding 1: Adding a cache-suffix without enabling the cache may leave caching disabled for this job _(inferred)_
+>
 > **Location:** `.github/workflows/test.yml` · line 42
 > **Confidence:** 92% | **Suggested check:** Confirm that `enable-cache: true` is set (or that caching is otherwise enabled) for this step
 >
@@ -91,28 +92,29 @@ What CodeLens posted as a PR comment:
 >
 > **Past reviews that triggered this (1 match):**
 >
-> | Similarity | File | Reviewer comment | Link |
-> |---|---|---|---|
-> | 88% | `.github/workflows/smokeshow.yml` | *"Since setup-uv v10.0.0, cache for this workflow is disabled... I think we can safely enable it..."* | [view](https://github.com/fastapi/fastapi/pull/16152#discussion_r3864473925) |
+> | Similarity | File                              | Reviewer comment                                                                                      | Link                                                                         |
+> | ---------- | --------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+> | 88%        | `.github/workflows/smokeshow.yml` | _"Since setup-uv v10.0.0, cache for this workflow is disabled... I think we can safely enable it..."_ | [view](https://github.com/fastapi/fastapi/pull/16152#discussion_r3864473925) |
 >
 > ---
-> *This analysis was generated automatically by CodeLens based on historical review patterns.*
+>
+> _This analysis was generated automatically by CodeLens based on historical review patterns._
 
 ## Tech stack
 
-| Tool | Role |
-|---|---|
-| FastAPI | Webhook ingestion, API endpoints, landing page |
-| PostgreSQL + pgvector | Vector search over code embeddings (Neon, free tier) |
-| SQLAlchemy + Alembic | ORM and schema migrations |
-| Voyage AI | Embeddings: `voyage-code-4` for code retrieval, `voyage-4-lite` for natural-language matching |
-| Groq | LLM for synthesis and the evaluation judge (free tier, no billing account required) |
-| Celery + Redis | Background job queue with parallel batch fan-out (Upstash, free tier) |
-| GitHub App + Webhooks | Auth, event delivery, HMAC-SHA256 signature verification |
-| ntfy | Push notifications on new app installations |
-| structlog | Structured logging with request-id tracing |
-| Docker + Compose | One-command local setup |
-| pytest | Unit + integration tests |
+| Tool                  | Role                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| FastAPI               | Webhook ingestion, API endpoints, landing page                                                |
+| PostgreSQL + pgvector | Vector search over code embeddings (Neon, free tier)                                          |
+| SQLAlchemy + Alembic  | ORM and schema migrations                                                                     |
+| Voyage AI             | Embeddings: `voyage-code-4` for code retrieval, `voyage-4-lite` for natural-language matching |
+| Groq                  | LLM for synthesis and the evaluation judge (free tier, no billing account required)           |
+| Celery + Redis        | Background job queue with parallel batch fan-out (Upstash, free tier)                         |
+| GitHub App + Webhooks | Auth, event delivery, HMAC-SHA256 signature verification                                      |
+| ntfy                  | Push notifications on new app installations                                                   |
+| structlog             | Structured logging with request-id tracing                                                    |
+| Docker + Compose      | One-command local setup                                                                       |
+| pytest                | Unit + integration tests                                                                      |
 
 Every piece runs on a genuinely free tier. See [Why Groq](#why-groq) for why the LLM provider changed mid-project.
 
@@ -122,20 +124,20 @@ I wanted a way to actually check whether this system works, not just claim it do
 
 **Cold-start** here means the share of held-out test samples for which no retrieved candidate cleared the similarity floor at all, so the system had nothing to compare against.
 
-| Version | Change | Result |
-|---|---|---|
-| v1 | Raw similarity, threshold tuned and reported on the same 15 samples | 37.5% precision, methodologically optimistic |
-| v2 | Added an independent LLM judge | 4.7% precision (n=24 test set) |
-| v3 | Grounded synthesis in the actual new-PR code | 83.3% precision on the tune subset (5/6 judged matches; 14 total samples), but recall collapsed on the test set |
-| v4 | Grew the corpus from 287 to 653 comments across 5 repos | A naive pooled split let one very-active repo eat 83% of the test set |
-| v5 | Stratified the split by repo | Balanced representation, but cold-start rose to ~71% (17 of 24) |
-| v6 | Found and removed 3 ground-truth comments that were another automated tool's output | Corpus integrity fix, filter added to prevent recurrence |
+| Version | Change                                                                              | Result                                                                                                          |
+| ------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| v1      | Raw similarity, threshold tuned and reported on the same 15 samples                 | 37.5% precision, methodologically optimistic                                                                    |
+| v2      | Added an independent LLM judge                                                      | 4.7% precision (n=24 test set)                                                                                  |
+| v3      | Grounded synthesis in the actual new-PR code                                        | 83.3% precision on the tune subset (5/6 judged matches; 14 total samples), but recall collapsed on the test set |
+| v4      | Grew the corpus from 287 to 653 comments across 5 repos                             | A naive pooled split let one very-active repo eat 83% of the test set                                           |
+| v5      | Stratified the split by repo                                                        | Balanced representation, but cold-start rose to ~71% (17 of 24)                                                 |
+| v6      | Found and removed 3 ground-truth comments that were another automated tool's output | Corpus integrity fix, filter added to prevent recurrence                                                        |
 
 Where things actually stand: the corpus construction, matching pipeline, and evaluation procedure are implemented and reproducible, not proven correct. Sample sizes (14-35 per run) are still small enough that any single precision, recall, or F1 number should be read as directional. The dominant bottleneck right now is retrieval cold-start on topically distant repos, not synthesis or judging quality.
 
 ## Known limitations
 
-- **Cold-start, around 70%.** Most held-out test hunks retrieve nothing above the similarity floor. That's a corpus-coverage problem, not a matching-quality problem.
+- **Cold-start: around 70%.** Most held-out test hunks retrieve nothing above the similarity floor. That's a corpus-coverage problem, not a matching-quality problem.
 - **Domain transfer is weak.** Code-similarity retrieval works within a topical neighborhood, like web frameworks or HTTP clients, and doesn't reliably transfer to a structurally different domain such as a validation library.
 - **Small sample sizes.** 14 to 35 samples per run means any single number carries a wide confidence interval.
 - **Corpus coverage.** The current ingestion strategy does not reliably capture every historical review comment in highly active repositories, which limits corpus coverage.
@@ -192,3 +194,7 @@ Covers diff parsing, the matching and scoring engine, markdown formatting, synth
 ## Scaling this further
 
 I deliberately left out Kafka, Kubernetes, an MCP server, ReAct agents, and multi-tenancy to keep the zero-cost constraint and go deep on retrieval and evaluation instead of breadth. At real scale I'd add durable event buffering and worker autoscaling for burst handling, per-tenant corpus isolation, a `.codelensignore` per repo to filter noise like lockfiles, and a proper A/B framework for prompt and threshold changes instead of the sequential eval-and-compare loop I'm running now.
+
+## Author
+
+**Spraha Singh** · [GitHub](https://github.com/sprahasingh)
