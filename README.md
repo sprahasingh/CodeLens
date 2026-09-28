@@ -31,15 +31,15 @@ GitHub's review-comment API pairs every historical comment with the exact code i
 
 ```mermaid
 flowchart TD
-    A[PR opened / pushed] --> B[webhook: signature + idempotency]
+    A[PR opened / pushed] --> B[webhook\nsignature + idempotency]
     B --> C{synchronize?}
-    C -- yes --> D[delta diff: before...after SHA]
+    C -- yes --> D[delta diff\nbefore...after SHA]
     C -- no --> E[full PR diff]
-    D & E --> F[split into hunks · filter noise]
-    F --> G[fan-out: N × process_pr_batch in parallel]
-    G --> H[embed with voyage-code-4 · pgvector search]
+    D & E --> F[split into hunks\nfilter noise]
+    F --> G[fan-out: N × process_pr_batch\nin parallel]
+    G --> H[embed · voyage-code-4\npgvector search]
     H --> I[LLM synthesis · Groq]
-    I --> J[post PR comment with findings + evidence links]
+    I --> J[post PR comment\nfindings + evidence links]
 ```
 
 Large PRs are split into independent batches of 10 hunks and queued simultaneously. Each batch posts its own comment as soon as it finishes, so feedback from the first completed batch typically appears within 30 seconds. On `synchronize` events (new commits pushed to an open PR), CodeLens uses GitHub's three-dot compare endpoint to scan only the newly pushed commits, not the entire PR diff again. If a batch hits its time limit, whatever was synthesized gets posted immediately with a partial indicator so nothing is lost silently.
