@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>CodeLens: AI Code Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;450;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ─── tokens ─── */
+    :root {
+      --bg:          #0b0d14;
+      --surface:     #141820;
+      --surface-2:   #1a1f2e;
+      --border:      #1d2235;
+      --border-soft: #252c3f;
+      --accent:      #4f9eff;
+      --accent-dim:  rgba(79, 158, 255, 0.12);
+      --accent-glow: rgba(79, 158, 255, 0.06);
+      --green:       #34d399;
+      --yellow:      #fbbf24;
+      --red:         #f87171;
+      --text:        #e8eaf0;
+      --text-2:      #9ba3bf;
+      --text-3:      #5d6480;
+      --mono:        'JetBrains Mono', 'Fira Code', monospace;
+      --sans:        'Inter', system-ui, sans-serif;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --bg:          #f5f6fa;
+        --surface:     #ffffff;
+        --surface-2:   #f0f2f8;
+        --border:      #dde1ee;
+        --border-soft: #e8ebf5;
+        --accent-dim:  rgba(79, 158, 255, 0.08);
+        --accent-glow: rgba(79, 158, 255, 0.04);
+        --text:        #0d1021;
+        --text-2:      #4a5068;
+        --text-3:      #9ba3bf;
+        color-scheme: light;
+      }
+    }
+    :root[data-theme="light"] {
+      --bg:          #f5f6fa;
+      --surface:     #ffffff;
+      --surface-2:   #f0f2f8;
+      --border:      #dde1ee;
+      --border-soft: #e8ebf5;
+      --accent-dim:  rgba(79, 158, 255, 0.08);
+      --accent-glow: rgba(79, 158, 255, 0.04);
+      --text:        #0d1021;
+      --text-2:      #4a5068;
+      --text-3:      #9ba3bf;
+      color-scheme: light;
+    }
+
+    /* ─── reset ─── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 1rem;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    img { max-width: 100%; display: block; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ─── layout ─── */
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ─── nav ─── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 13, 20, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+    }
+    .logo {
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo-icon {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .logo-icon svg { width: 16px; height: 16px; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+    .nav-links a {
+      font-size: 0.875rem;
+      color: var(--text-2);
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--sans);
+      font-size: 0.875rem;
+      font-weight: 600;
+      padding: 8px 18px;
+      border-radius: 7px;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    .btn:hover { opacity: 0.88; text-decoration: none; transform: translateY(-1px); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border-soft); }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ─── hero ─── */
+    .hero {
+      padding: 80px 0 64px;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(79, 158, 255, 0.22);
+      border-radius: 100px;
+      padding: 5px 14px 5px 10px;
+      font-size: 0.78rem;
+      font-family: var(--mono);
+      color: var(--accent);
+      margin-bottom: 28px;
+    }
+    .hero-badge-dot {
+      width: 7px; height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    h1 {
+      font-family: var(--mono);
+      font-size: clamp(2.2rem, 5vw, 3.4rem);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.04em;
+      text-wrap: balance;
+      max-width: 760px;
+      margin: 0 auto 20px;
+    }
+    h1 em {
+      font-style: normal;
+      color: var(--accent);
+    }
+    .hero-sub {
+      font-size: 1.1rem;
+      color: var(--text-2);
+      max-width: 560px;
+      margin: 0 auto 36px;
+      line-height: 1.65;
+    }
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* ─── PR comment mockup ─── */
+    .mockup-wrap {
+      margin: 60px auto 0;
+      max-width: 780px;
+      text-align: left;
+    }
+    .mockup-label {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--text-3);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+      padding-left: 4px;
+    }
+    .pr-comment {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.28), 0 1px 4px rgba(0,0,0,0.18);
+    }
+    .pr-comment-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #4f9eff 0%, #7c3aed 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .comment-meta {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .comment-author {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .comment-bot-badge {
+      font-size: 0.68rem;
+      background: var(--accent-dim);
+      border: 1px solid rgba(79,158,255,0.25);
+      color: var(--accent);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: var(--mono);
+      margin-left: 8px;
+    }
+    .comment-time {
+      font-size: 0.75rem;
+      color: var(--text-3);
+      font-family: var(--mono);
+    }
+    .pr-comment-body {
+      padding: 20px;
+    }
+    .gh-h2 {
+      font-family: var(--mono);
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+      letter-spacing: -0.01em;
+    }
+    .gh-stats {
+      font-size: 0.78rem;
+      color: var(--text-3);
+      font-style: italic;
+      margin-bottom: 14px;
+    }
+    .gh-divider {
+      border-top: 1px solid var(--border);
+      margin: 14px 0;
+    }
+    .gh-h3 {
+      font-family: var(--mono);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 10px;
+      letter-spacing: -0.01em;
+    }
+    .gh-meta-row {
+      font-size: 0.8rem;
+      color: var(--text-2);
+      margin-bottom: 7px;
+      line-height: 1.5;
+    }
+    .gh-label {
+      font-weight: 600;
+      color: var(--text);
+    }
+    .gh-code {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--accent);
+    }
+    .gh-pre {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 10px;
+      overflow-x: auto;
+    }
+    .gh-pre code {
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      color: var(--green);
+      background: none;
+      border: none;
+      padding: 0;
+    }
+    .gh-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.76rem;
+      margin-bottom: 10px;
+    }
+    .gh-table th {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-3);
+      text-align: left;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .gh-table td {
+      padding: 5px 10px;
+      color: var(--text-2);
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .gh-table tr:last-child td { border-bottom: none; }
+    .gh-footer-text {
+      font-size: 0.75rem;
+      color: var(--text-3);
+      font-style: italic;
+    }
+    .gh-link {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+    }
+
+    /* ─── section shared ─── */
+    section { padding: 80px 0; }
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+    h2 {
+      font-family: var(--mono);
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      text-wrap: balance;
+      margin-bottom: 14px;
+    }
+    .section-sub {
+      font-size: 1rem;
+      color: var(--text-2);
+      max-width: 520px;
+      line-height: 1.65;
+    }
+
+    /* ─── how it works ─── */
+    .steps-divider {
+      border-top: 1px solid var(--border);
+    }
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+      margin-top: 52px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .step {
+      padding: 32px 28px;
+      position: relative;
+    }
+    .step:not(:last-child) {
+      border-right: 1px solid var(--border);
+    }
+    .step-num {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      margin-bottom: 16px;
+    }
+    .step h3 {
+      font-family: var(--mono);
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+    }
+    .step p {
+      font-size: 0.875rem;
+      color: var(--text-2);
+      line-height: 1.65;
+    }
+
+    /* ─── features ─── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 52px;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .feature-card:hover {
+      border-color: var(--border-soft);
+      background: var(--surface-2);
+    }
+    .feature-icon {
+      width: 36px; height: 36px;
+      background: var(--accent-dim);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 1rem;
+    }
+    .feature-card h3 {
+      font-family: var(--mono);
+      font-size: 0.92rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 0.84rem;
+      color: var(--text-2);
+      line-height: 1.6;
+    }
+
+    /* ─── tech / eval ─── */
+    .tech-section {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .tech-inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 64px;
+      align-items: center;
+    }
+    .tech-stack-list {
+      list-style: none;
+      margin-top: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .tech-stack-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 0.875rem;
+      color: var(--text-2);
+    }
+    .tech-stack-list li .label {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--accent);
+      min-width: 110px;
+      flex-shrink: 0;
+      padding-top: 2px;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .metric-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .metric-num {
+      font-family: var(--mono);
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .metric-num span { color: var(--accent); }
+    .metric-label {
+      font-size: 0.78rem;
+      color: var(--text-3);
+      line-height: 1.45;
+    }
+
+    /* ─── footer ─── */
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+    }
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .footer-copy {
+      font-size: 0.82rem;
+      color: var(--text-3);
+      font-family: var(--mono);
+    }
+    .footer-links {
+      display: flex;
+      gap: 20px;
+      list-style: none;
+    }
+    .footer-links a {
+      font-size: 0.82rem;
+      color: var(--text-3);
+      font-family: var(--mono);
+      transition: color 0.15s;
+    }
+    .footer-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* ─── animations ─── */
+    @media (prefers-reduced-motion: no-preference) {
+      .fade-in {
+        opacity: 0;
+        transform: translateY(16px);
+        animation: fadeIn 0.55s ease forwards;
+      }
+      .fade-in:nth-child(2) { animation-delay: 0.08s; }
+      .fade-in:nth-child(3) { animation-delay: 0.16s; }
+      .fade-in:nth-child(4) { animation-delay: 0.24s; }
+      @keyframes fadeIn {
+        to { opacity: 1; transform: translateY(0); }
+      }
+    }
+
+    /* ─── responsive ─── */
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+      .steps-grid {
+        grid-template-columns: 1fr;
+      }
+      .step:not(:last-child) {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .features-grid { grid-template-columns: 1fr; }
+      .tech-inner { grid-template-columns: 1fr; gap: 36px; }
+      .metrics-grid { grid-template-columns: 1fr 1fr; }
+      .hero { padding: 56px 0 40px; }
+      section { padding: 56px 0; }
+      h1 { font-size: 1.9rem; }
+      .mockup-wrap { margin-top: 40px; }
+    }
+    @media (max-width: 480px) {
+      .metrics-grid { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; align-items: flex-start; }
+      .comment-stat-row { gap: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── nav ─── -->
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="logo" style="text-decoration:none">
+        <div class="logo-icon">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 4.5L1 8L3 11.5" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M13 4.5L15 8L13 11.5" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M9.5 3L6.5 13" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        CodeLens
+      </a>
+      <ul class="nav-links">
+        <li><a href="#how-it-works">How it works</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#tech">Stack</a></li>
+      </ul>
+      <a href="https://github.com/apps/codelens-gh" class="btn btn-primary" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Install on GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─── hero ─── -->
+<section class="hero">
+  <div class="container">
+    <div class="fade-in">
+      <div class="hero-badge">
+        <span class="hero-badge-dot"></span>
+        RAG-powered · Live on GitHub
+      </div>
+    </div>
+    <h1 class="fade-in">Code review that<br><em>learns from history</em></h1>
+    <p class="hero-sub fade-in">
+      CodeLens watches every pull request, retrieves semantically similar past review comments, and posts structured feedback before a human reviewer opens the diff.
+    </p>
+    <div class="hero-actions fade-in">
+      <a href="https://github.com/apps/codelens-gh" class="btn btn-primary" target="_blank" rel="noopener">
+        Install GitHub App
+      </a>
+      <a href="#how-it-works" class="btn btn-outline">See how it works</a>
+    </div>
+
+    <!-- PR comment mockup -->
+    <div class="mockup-wrap fade-in">
+      <div class="mockup-label">Live PR review output</div>
+      <div class="pr-comment">
+        <div class="pr-comment-header">
+          <div class="avatar">CL</div>
+          <div class="comment-meta">
+            <div>
+              <span class="comment-author">codelens-gh</span>
+              <span class="comment-bot-badge">bot</span>
+            </div>
+            <span class="comment-time">just now</span>
+          </div>
+        </div>
+        <div class="pr-comment-body">
+          <div class="gh-h2">CodeLens Pre-Review Analysis</div>
+          <div class="gh-stats">Batch 1 of 2 · 10 hunks scanned · 4 similar past patterns matched</div>
+          <div class="gh-divider"></div>
+          <div class="gh-h3">Finding 1: Missing test assertion for the new error path</div>
+          <div class="gh-meta-row">
+            <span class="gh-label">Location:</span> <code class="gh-code">tests/test_client.py</code> · line 142
+          </div>
+          <div class="gh-meta-row">
+            <span class="gh-label">Confidence:</span> 72% &nbsp;|&nbsp; <span class="gh-label">Suggested check:</span> Verify the error branch has a corresponding test case
+          </div>
+          <div class="gh-meta-row gh-label">Your code (this PR):</div>
+          <pre class="gh-pre"><code>def handle_response(self, response):
+    if response.status_code == 404:
+        raise NotFoundError(response)
+    return response.json()</code></pre>
+          <div class="gh-meta-row">
+            <span class="gh-label">Evidence:</span> Similar pattern flagged in httpx #1842; the timeout branch was covered but the read-error case was not.
+          </div>
+          <div class="gh-meta-row gh-label">Past reviews that triggered this (2 matches):</div>
+          <table class="gh-table">
+            <thead><tr><th>Similarity</th><th>File</th><th>Reviewer comment</th><th>Link</th></tr></thead>
+            <tbody>
+              <tr><td>87%</td><td><code class="gh-code">tests/test_transport.py</code></td><td><em>"you're missing a test for the read error path here"</em></td><td><a href="#" class="gh-link">view</a></td></tr>
+              <tr><td>81%</td><td><code class="gh-code">tests/test_client.py</code></td><td><em>"timeout branch covered but read errors are not tested"</em></td><td><a href="#" class="gh-link">view</a></td></tr>
+            </tbody>
+          </table>
+          <div class="gh-divider"></div>
+          <div class="gh-footer-text">This analysis was generated automatically by CodeLens based on historical review patterns.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── how it works ─── -->
+<section id="how-it-works" class="steps-divider">
+  <div class="container">
+    <div class="section-label">Process</div>
+    <h2>From push to review in seconds</h2>
+    <p class="section-sub">A pull request triggers the full pipeline automatically. No configuration needed beyond installing the app.</p>
+    <div class="steps-grid">
+      <div class="step">
+        <div class="step-num">01</div>
+        <h3>Install the GitHub App</h3>
+        <p>Connect CodeLens to your repositories. It immediately begins ingesting past review comments to build the retrieval corpus.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <h3>Open or push a PR</h3>
+        <p>On every <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">opened</code>, <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">reopened</code>, or <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">synchronize</code> event, the diff is split into parallel batches and queued for review.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <h3>Receive structured feedback</h3>
+        <p>Each batch retrieves similar past patterns, synthesizes concerns via LLM, and posts a grounded review comment directly on the PR.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── features ─── -->
+<section id="features">
+  <div class="container">
+    <div class="section-label">Features</div>
+    <h2>Built for production</h2>
+    <p class="section-sub">Every part of the pipeline is designed to be fast, fault-tolerant, and grounded in real code history, not generic advice.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <h3>Parallel batch processing</h3>
+        <p>Large PRs are split into independent batches of 10 hunks and processed concurrently. Each batch posts its own comment as soon as it finishes.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        </div>
+        <h3>Semantic retrieval</h3>
+        <p>Every hunk is embedded with Voyage AI's code model and searched against a pgvector index of your project's historical review comments at cosine threshold 0.55.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>
+        </div>
+        <h3>Delta diff on push</h3>
+        <p>Synchronize events use GitHub's three-dot compare endpoint, scanning only the newly pushed commits, not the entire PR diff again.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Idempotent delivery</h3>
+        <p>Every review is keyed on (repo, PR number, commit SHA). Duplicate webhook deliveries or retries silently no-op with no double-posts.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 15.5"/></svg>
+        </div>
+        <h3>Partial results on timeout</h3>
+        <p>If a batch hits its time limit, whatever was synthesized is posted immediately with a partial indicator. No work is lost silently.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v4c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 9v4c0 1.66 4.03 3 9 3s9-1.34 9-3V9"/><path d="M3 13v4c0 1.66 4.03 3 9 3s9-1.34 9-3v-4"/></svg>
+        </div>
+        <h3>Cross-repo patterns</h3>
+        <p>The retrieval corpus spans multiple ingested repositories. Patterns from httpx, FastAPI, or Pydantic can surface insights on your own codebase.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── tech stack ─── -->
+<section id="tech" class="tech-section">
+  <div class="container">
+    <div class="tech-inner">
+      <div>
+        <div class="section-label">Architecture</div>
+        <h2>Retrieval-augmented from the ground up</h2>
+        <p class="section-sub" style="margin-bottom:0">Every component is chosen for reliability and developer trust: embeddings that understand code, a vector store that scales, and inference fast enough to beat a human's first coffee break.</p>
+        <ul class="tech-stack-list">
+          <li><span class="label">embeddings</span> Voyage AI voyage-code-4 (1024-dim, code-optimized)</li>
+          <li><span class="label">vector store</span> pgvector on PostgreSQL, cosine similarity search</li>
+          <li><span class="label">inference</span> Groq LLM API, sub-second synthesis latency</li>
+          <li><span class="label">task queue</span> Celery with Redis, prefork pool, asyncio-safe</li>
+          <li><span class="label">runtime</span> FastAPI · Docker · Caddy TLS</li>
+          <li><span class="label">webhook</span> GitHub App with HMAC-SHA256 signature verification</li>
+        </ul>
+      </div>
+      <div>
+        <div class="section-label">Eval</div>
+        <h2>Tested against real maintainers</h2>
+        <p class="section-sub">Held-out evaluation on review comments from 5 open-source Python repositories (psf/requests, tiangolo/fastapi, pallets/flask, encode/httpx, pydantic/pydantic). Stratified by repo to prevent any single project from dominating the test set.</p>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-num">5<span>×</span></div>
+            <div class="metric-label">Open-source repos in the eval pool</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-num">0.55</div>
+            <div class="metric-label">Cosine similarity floor, tuned on a held-out tune set</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-num">10</div>
+            <div class="metric-label">Hunks per batch, calibrated to fit in a 10-min task window</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-num"><span>&lt;</span>30s</div>
+            <div class="metric-label">Time to first review comment on a typical PR</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── footer ─── -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <span class="footer-copy">CodeLens · Built with Voyage AI, pgvector, Groq</span>
+      <ul class="footer-links">
+        <li><a href="https://github.com" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="/health">Status</a></li>
+        <li><a href="/docs">API</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

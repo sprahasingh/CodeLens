@@ -1,13 +1,17 @@
 import logging
 import structlog
+from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.routers import repos
 from app.routers import webhook
 from app.core.config import settings
 from app.routers import metrics
 from app.core.middleware import RequestIdMiddleware
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 structlog.configure(
     processors=[
@@ -33,6 +37,12 @@ app.add_middleware(RequestIdMiddleware)
 app.include_router(repos.router)
 app.include_router(webhook.router)
 app.include_router(metrics.router)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def landing():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.exception_handler(StarletteHTTPException)
