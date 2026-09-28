@@ -235,7 +235,7 @@ async def post_pr_comment(
     )
 
     try:
-        async with await get_github_client() as client:
+        async with await get_github_client(owner, repo) as client:
             response = await client.post(
                 f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
                 json={"body": body}

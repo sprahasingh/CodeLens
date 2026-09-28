@@ -92,7 +92,7 @@ async def paginate(client, url, params, max_items: int = None):
 
 
 async def fetch_pr_diff(owner: str, repo: str, pr_number: int) -> str:
-    async with await get_github_client() as client:
+    async with await get_github_client(owner, repo) as client:
         response = await client.get(
             f"/repos/{owner}/{repo}/pulls/{pr_number}",
             headers={"Accept": "application/vnd.github.v3.diff"}
@@ -106,7 +106,7 @@ async def fetch_pr_diff(owner: str, repo: str, pr_number: int) -> str:
 async def fetch_compare_diff(owner: str, repo: str, before_sha: str, after_sha: str) -> str:
     """Fetch the diff between two commits — used on push to an open PR so only
     the newly pushed changes are scanned, not the entire PR diff."""
-    async with await get_github_client() as client:
+    async with await get_github_client(owner, repo) as client:
         response = await client.get(
             f"/repos/{owner}/{repo}/compare/{before_sha}...{after_sha}",
             headers={"Accept": "application/vnd.github.v3.diff"}
@@ -122,7 +122,7 @@ async def fetch_compare_diff(owner: str, repo: str, before_sha: str, after_sha: 
 
 
 async def fetch_pr_review_comments(owner: str, repo: str, pr_number: int) -> list:
-    async with await get_github_client() as client:
+    async with await get_github_client(owner, repo) as client:
         comments = await paginate(
             client,
             f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
@@ -139,7 +139,7 @@ async def fetch_pr_review_comments(owner: str, repo: str, pr_number: int) -> lis
 
 
 async def fetch_all_review_comments(owner: str, repo: str) -> list:
-    async with await get_github_client() as client:
+    async with await get_github_client(owner, repo) as client:
         comments = await paginate(
             client,
             f"/repos/{owner}/{repo}/pulls/comments",
