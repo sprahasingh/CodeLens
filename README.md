@@ -68,18 +68,35 @@ The changed code:
 +          cache-suffix: dev-all
 ```
 
-What CodeLens produced:
+What CodeLens posted as a PR comment:
 
+> ## CodeLens Pre-Review Analysis
+>
+> *1 hunk scanned · 5 similar past patterns matched*
+>
+> ---
+>
 > ### Finding 1: Adding a cache-suffix without enabling the cache may leave caching disabled for this job *(inferred)*
+> **Location:** `.github/workflows/test.yml` · line 42
 > **Confidence:** 92% | **Suggested check:** Confirm that `enable-cache: true` is set (or that caching is otherwise enabled) for this step
 >
-> **Similar past code** — `.github/workflows/smokeshow.yml` (similarity: 88%):
+> **Your code (this PR):**
+>
 > ```yaml
-> cache-suffix: github-actions
+> version: "0.11.30"
+> cache-suffix: dev-all
 > ```
-> **Past reviewer said:** *"Since setup-uv v10.0.0, cache for this workflow is disabled... I think we can safely enable it..."* ([view original](https://github.com/fastapi/fastapi/pull/16152#discussion_r3864473925))
 >
 > **Evidence:** Past comment notes that after setup-uv v10.0.0 the cache is disabled unless `enable-cache: true` is set, and only a cache-suffix was added here.
+>
+> **Past reviews that triggered this (1 match):**
+>
+> | Similarity | File | Reviewer comment | Link |
+> |---|---|---|---|
+> | 88% | `.github/workflows/smokeshow.yml` | *"Since setup-uv v10.0.0, cache for this workflow is disabled... I think we can safely enable it..."* | [view](https://github.com/fastapi/fastapi/pull/16152#discussion_r3864473925) |
+>
+> ---
+> *This analysis was generated automatically by CodeLens based on historical review patterns.*
 
 ## Tech stack
 
