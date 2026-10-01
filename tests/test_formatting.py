@@ -1,4 +1,8 @@
-from app.services.github_comment import extract_relevant_lines, format_feedback_as_markdown
+from app.services.github_comment import (
+    _no_concerns_body,
+    extract_relevant_lines,
+    format_feedback_as_markdown,
+)
 
 
 def test_extract_relevant_lines_keeps_only_added_lines():
@@ -70,3 +74,10 @@ def test_format_feedback_as_markdown_tags_inferred_concerns():
     feedback = [{"concern": "Guessed issue", "confidence": 0.5, "is_inference": True, "source_comments": []}]
     markdown = format_feedback_as_markdown(feedback)
     assert "*(inferred)*" in markdown
+
+
+def test_no_concerns_comment_discloses_omitted_hunks():
+    body = _no_concerns_body(similar_count=0, hunks_scanned=20, hunks_omitted=4)
+
+    assert "Context was retrieved for 20 of 24 diff hunks" in body
+    assert "4 were excluded by the scan limit or file filters" in body

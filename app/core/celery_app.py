@@ -29,7 +29,7 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     broker_connection_retry_on_startup=True,
-    task_soft_time_limit=600,   # 10 min: each batch is ≤10 hunks, well within budget
+    task_soft_time_limit=600,   # 10 min: each PR task is capped at 20 hunks
     task_time_limit=900,        # 15 min: hard kill if soft limit handler hangs
 
     redis_backend_use_ssl={

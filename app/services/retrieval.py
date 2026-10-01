@@ -4,7 +4,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.evaluation import embed_with_retry
+from app.services.embedder import embed_texts
 import re
+from voyageai.error import RateLimitError
 
 
 logger = structlog.get_logger()
@@ -12,7 +14,18 @@ logger = structlog.get_logger()
 SIMILARITY_THRESHOLD = 0.55
 MAX_RESULTS = 5
 MAX_HUNKS_PER_PR = 20       # caps processing on huge PRs; ~20 hunks covers most real-world changes
-EMBED_SLEEP_SECONDS = 5     # delay between Voyage embedding calls to stay within rate limits
+MAX_CANDIDATE_HUNKS = 3
+LOW_SIGNAL_FILENAMES = {
+    "cargo.lock",
+    "composer.lock",
+    "gemfile.lock",
+    "go.sum",
+    "package-lock.json",
+    "poetry.lock",
+    "pnpm-lock.yaml",
+    "uv.lock",
+    "yarn.lock",
+}
 
 
 async def find_similar_comments(
@@ -32,6 +45,18 @@ async def find_similar_comments(
         return []
 
     query_vector = await embed_with_retry(hunk)
+    return await _find_similar_comments_by_vector(
+        query_vector, repo_owner, repo_name, limit, hunk
+    )
+
+
+async def _find_similar_comments_by_vector(
+    query_vector: List[float],
+    repo_owner: str,
+    repo_name: str,
+    limit: int = MAX_RESULTS,
+    hunk: str = ""
+) -> List[Dict[str, Any]]:
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
     async with AsyncSessionLocal() as session:
@@ -181,11 +206,23 @@ async def retrieve_for_pr(
         hunks = hunks[:MAX_HUNKS_PER_PR]
     logger.info("pr_hunks_extracted", count=total_hunks)
 
+    eligible_hunks = [
+        (filepath, hunk)
+        for filepath, hunk in hunks
+        if not is_low_signal_path(filepath)
+    ]
+    skipped_hunks = len(hunks) - len(eligible_hunks)
+    if skipped_hunks:
+        logger.info("low_signal_hunks_skipped", count=skipped_hunks)
+    if not eligible_hunks:
+        return [], 0
+
+    embeddings = await _embed_hunks_with_retry([hunk for _, hunk in eligible_hunks])
     grouped = []
-    for i, (filepath, hunk) in enumerate(hunks):
-        if i > 0:
-            await asyncio.sleep(EMBED_SLEEP_SECONDS)
-        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+    for i, ((filepath, hunk), query_vector) in enumerate(zip(eligible_hunks, embeddings)):
+        similar = await _find_similar_comments_by_vector(
+            query_vector, repo_owner, repo_name, hunk=hunk
+        )
         if similar:
             logger.info(
                 "hunk_matched",
@@ -214,11 +251,23 @@ async def retrieve_for_hunks(
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Retrieve similar past review comments for a pre-split list of (filepath, hunk) tuples.
     Used by process_pr_batch which receives its batch from the fan-out task."""
+    eligible_hunks = [
+        (filepath, hunk)
+        for filepath, hunk in hunks
+        if not is_low_signal_path(filepath)
+    ]
+    skipped_hunks = len(hunks) - len(eligible_hunks)
+    if skipped_hunks:
+        logger.info("low_signal_hunks_skipped", count=skipped_hunks)
+    if not eligible_hunks:
+        return [], 0
+
+    embeddings = await _embed_hunks_with_retry([hunk for _, hunk in eligible_hunks])
     grouped = []
-    for i, (filepath, hunk) in enumerate(hunks):
-        if i > 0:
-            await asyncio.sleep(EMBED_SLEEP_SECONDS)
-        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+    for i, ((filepath, hunk), query_vector) in enumerate(zip(eligible_hunks, embeddings)):
+        similar = await _find_similar_comments_by_vector(
+            query_vector, repo_owner, repo_name, hunk=hunk
+        )
         if similar:
             logger.info(
                 "hunk_matched",
@@ -231,8 +280,41 @@ async def retrieve_for_hunks(
                 s["triggered_by_hunk"] = hunk
                 s["triggered_by_file"] = filepath
             grouped.append({"hunk": hunk, "filepath": filepath, "matches": similar})
-    logger.info("batch_retrieval_complete", grouped_hunks=len(grouped), total_hunks=len(hunks))
-    return grouped, len(hunks)
+    grouped.sort(
+        key=lambda group: (
+            -group["matches"][0]["similarity"],
+            -len(group["matches"])
+        )
+    )
+    selected = grouped[:MAX_CANDIDATE_HUNKS]
+    logger.info(
+        "batch_retrieval_complete",
+        grouped_hunks=len(grouped),
+        selected_hunks=len(selected),
+        total_hunks=len(eligible_hunks)
+    )
+    return selected, len(eligible_hunks)
+
+
+def is_low_signal_path(filepath: str) -> bool:
+    filename = filepath.rsplit("/", 1)[-1].lower()
+    return filename in LOW_SIGNAL_FILENAMES or filename.endswith((".min.js", ".min.css"))
+
+
+async def _embed_hunks_with_retry(hunks: List[str]) -> List[List[float]]:
+    for attempt in range(1, 4):
+        try:
+            return embed_texts(hunks)
+        except RateLimitError:
+            if attempt == 3:
+                raise
+            logger.warning(
+                "voyage_rate_limited_retrying_batch",
+                attempt=attempt,
+                wait_seconds=65
+            )
+            await asyncio.sleep(65)
+    return []
 
 
 def split_diff_into_hunks(diff: str) -> List[Tuple[str, str]]:

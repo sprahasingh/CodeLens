@@ -55,3 +55,51 @@ async def test_synthesize_feedback_returns_empty_list_when_groq_call_fails(monke
 
     result = await synthesizer.synthesize_feedback("some hunk", SIMILAR_COMMENTS)
     assert result == []
+
+
+async def test_synthesize_feedback_for_hunks_uses_one_call_and_scopes_sources(monkeypatch):
+    calls = []
+
+    async def fake_call_groq_json(prompt, model=None):
+        calls.append(prompt)
+        return {
+            "concerns": [
+                {
+                    "hunk_index": 1,
+                    "concern": "Check the new fallback behavior",
+                    "source_indices": [0, 1],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(synthesizer, "call_groq_json", fake_call_groq_json)
+    groups = [
+        {
+            "filepath": "src/first.py",
+            "hunk": "first changed code",
+            "matches": [{**SIMILAR_COMMENTS[0], "triggered_by_file": "src/first.py"}],
+        },
+        {
+            "filepath": "src/second.py",
+            "hunk": "second changed code",
+            "matches": [{**SIMILAR_COMMENTS[1], "triggered_by_file": "src/second.py"}],
+        },
+    ]
+
+    result = await synthesizer.synthesize_feedback_for_hunks(groups)
+
+    assert len(calls) == 1
+    assert "src/first.py" in calls[0]
+    assert "src/second.py" in calls[0]
+    assert len(result) == 1
+    assert result[0]["source_comments"] == [groups[1]["matches"][0]]
+
+
+async def test_synthesize_feedback_for_hunks_signals_unavailable_groq(monkeypatch):
+    async def fake_call_groq_json(prompt, model=None):
+        return None
+
+    monkeypatch.setattr(synthesizer, "call_groq_json", fake_call_groq_json)
+    groups = [{"filepath": "src/a.py", "hunk": "changed code", "matches": SIMILAR_COMMENTS}]
+
+    assert await synthesizer.synthesize_feedback_for_hunks(groups) is None

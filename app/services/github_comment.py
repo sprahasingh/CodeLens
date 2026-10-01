@@ -66,7 +66,8 @@ def format_feedback_as_markdown(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    hunks_omitted: int = 0
 ) -> str:
     if not feedback:
         return ""
@@ -82,6 +83,12 @@ def format_feedback_as_markdown(
         stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} matched")
     if stats_parts:
         lines.append(f"*{' · '.join(stats_parts)}*\n")
+    if hunks_omitted:
+        lines.append(
+            f"> Context was retrieved for {hunks_scanned} of "
+            f"{hunks_scanned + hunks_omitted} diff hunks; {hunks_omitted} "
+            "were excluded by the scan limit or file filters.\n"
+        )
 
     for i, item in enumerate(feedback, 1):
         confidence_pct = int(item.get("confidence", 0) * 100)
@@ -189,7 +196,8 @@ def _no_concerns_body(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    hunks_omitted: int = 0
 ) -> str:
     stats_parts = []
     if total_batches > 1:
@@ -199,6 +207,13 @@ def _no_concerns_body(
     if similar_count > 0:
         stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} found")
     stats_line = f"*{' · '.join(stats_parts)}*\n\n" if stats_parts else ""
+    omitted_note = ""
+    if hunks_omitted:
+        omitted_note = (
+            f"> Context was retrieved for {hunks_scanned} of "
+            f"{hunks_scanned + hunks_omitted} diff hunks; {hunks_omitted} "
+            "were excluded by the scan limit or file filters.\n\n"
+        )
 
     if similar_count > 0:
         conclusion = "No actionable concerns found — similar patterns were retrieved but none applied to the current changes."
@@ -208,6 +223,7 @@ def _no_concerns_body(
     body = (
         "## CodeLens Pre-Review Analysis\n\n"
         + stats_line
+        + omitted_note
         + conclusion + "\n\n"
         "---\n"
         "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
@@ -226,12 +242,17 @@ async def post_pr_comment(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    hunks_omitted: int = 0
 ) -> bool:
     body = (
-        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, batch_num, total_batches, partial)
+        format_feedback_as_markdown(
+            feedback, similar_count, hunks_scanned, batch_num, total_batches, partial, hunks_omitted
+        )
         if feedback
-        else _no_concerns_body(similar_count, hunks_scanned, batch_num, total_batches, partial)
+        else _no_concerns_body(
+            similar_count, hunks_scanned, batch_num, total_batches, partial, hunks_omitted
+        )
     )
 
     try:
