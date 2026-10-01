@@ -1,10 +1,4 @@
-from app.services.github_comment import (
-    _analysis_unavailable_body,
-    _no_concerns_body,
-    _review_skipped_body,
-    extract_relevant_lines,
-    format_feedback_as_markdown,
-)
+from app.services.github_comment import extract_relevant_lines, format_feedback_as_markdown
 
 
 def test_extract_relevant_lines_keeps_only_added_lines():
@@ -76,26 +70,3 @@ def test_format_feedback_as_markdown_tags_inferred_concerns():
     feedback = [{"concern": "Guessed issue", "confidence": 0.5, "is_inference": True, "source_comments": []}]
     markdown = format_feedback_as_markdown(feedback)
     assert "*(inferred)*" in markdown
-
-
-def test_no_concerns_comment_discloses_omitted_hunks():
-    body = _no_concerns_body(similar_count=0, hunks_scanned=10, hunks_omitted=50)
-
-    assert "10 review windows scanned" in body
-    assert "This review sampled 10 of 60 review windows" in body
-    assert "remaining windows were not reviewed" in body
-
-
-def test_unavailable_analysis_comment_is_not_an_all_clear():
-    body = _analysis_unavailable_body(hunks_scanned=10, hunks_omitted=50)
-
-    assert "Analysis could not be completed" in body
-    assert "No findings were generated" in body
-    assert "this is not an all-clear" in body
-
-
-def test_filtered_review_status_is_not_an_all_clear():
-    body = _review_skipped_body()
-
-    assert "No reviewable source-code sections were found" in body
-    assert "this is not an all-clear" in body

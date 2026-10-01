@@ -4,33 +4,15 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.evaluation import embed_with_retry
-from app.services.embedder import embed_texts
 import re
-from voyageai.error import RateLimitError
 
 
 logger = structlog.get_logger()
 
 SIMILARITY_THRESHOLD = 0.55
 MAX_RESULTS = 5
-MAX_REVIEW_WINDOWS_PER_PR = 10
-MAX_CANDIDATE_HUNKS = 3
-MAX_WINDOW_LINES = 80
-WINDOW_OVERLAP_LINES = 6
-MAX_WINDOW_CHARS = 4000
-MAX_DIFF_LINE_CHARS = 1000
-LOW_SIGNAL_FILENAMES = {
-    "cargo.lock",
-    "composer.lock",
-    "gemfile.lock",
-    "go.sum",
-    "package-lock.json",
-    "poetry.lock",
-    "pnpm-lock.yaml",
-    "uv.lock",
-    "yarn.lock",
-}
-HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+MAX_HUNKS_PER_PR = 20       # caps processing on huge PRs; ~20 hunks covers most real-world changes
+EMBED_SLEEP_SECONDS = 5     # delay between Voyage embedding calls to stay within rate limits
 
 
 async def find_similar_comments(
@@ -50,18 +32,6 @@ async def find_similar_comments(
         return []
 
     query_vector = await embed_with_retry(hunk)
-    return await _find_similar_comments_by_vector(
-        query_vector, repo_owner, repo_name, limit, hunk
-    )
-
-
-async def _find_similar_comments_by_vector(
-    query_vector: List[float],
-    repo_owner: str,
-    repo_name: str,
-    limit: int = MAX_RESULTS,
-    hunk: str = ""
-) -> List[Dict[str, Any]]:
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
     async with AsyncSessionLocal() as session:
@@ -200,39 +170,22 @@ async def retrieve_for_pr(
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Retrieve similar past review comments for each hunk in a PR diff.
 
-    Returns matched review windows and the total number of reviewable windows
-    before representative sampling, including windows with no matches."""
+    Returns (grouped, total_hunks) where grouped is a list of
+    {"hunk": ..., "filepath": ..., "matches": [...]} dicts and total_hunks
+    is the count of all hunks extracted (including those with no matches)."""
 
-    all_hunks = split_diff_into_hunks(diff)
-    selected_hunks, total_windows = prepare_review_hunks(all_hunks)
-    grouped, _ = await retrieve_for_hunks(selected_hunks, repo_owner, repo_name)
-    return grouped, total_windows
+    hunks = split_diff_into_hunks(diff)
+    total_hunks = len(hunks)
+    if len(hunks) > MAX_HUNKS_PER_PR:
+        logger.warning("pr_hunks_capped", original=total_hunks, capped=MAX_HUNKS_PER_PR)
+        hunks = hunks[:MAX_HUNKS_PER_PR]
+    logger.info("pr_hunks_extracted", count=total_hunks)
 
-
-async def retrieve_for_hunks(
-    hunks: List[Tuple[str, str]],
-    repo_owner: str,
-    repo_name: str,
-) -> Tuple[List[Dict[str, Any]], int]:
-    """Retrieve similar past review comments for a pre-split list of (filepath, hunk) tuples.
-    Used by process_pr_batch which receives its batch from the fan-out task."""
-    eligible_hunks = [
-        (filepath, hunk)
-        for filepath, hunk in hunks
-        if not is_low_signal_path(filepath)
-    ]
-    skipped_hunks = len(hunks) - len(eligible_hunks)
-    if skipped_hunks:
-        logger.info("low_signal_hunks_skipped", count=skipped_hunks)
-    if not eligible_hunks:
-        return [], 0
-
-    embeddings = await _embed_hunks_with_retry([hunk for _, hunk in eligible_hunks])
     grouped = []
-    for i, ((filepath, hunk), query_vector) in enumerate(zip(eligible_hunks, embeddings)):
-        similar = await _find_similar_comments_by_vector(
-            query_vector, repo_owner, repo_name, hunk=hunk
-        )
+    for i, (filepath, hunk) in enumerate(hunks):
+        if i > 0:
+            await asyncio.sleep(EMBED_SLEEP_SECONDS)
+        similar = await find_similar_comments(hunk, repo_owner, repo_name)
         if similar:
             logger.info(
                 "hunk_matched",
@@ -245,191 +198,41 @@ async def retrieve_for_hunks(
                 s["triggered_by_hunk"] = hunk
                 s["triggered_by_file"] = filepath
             grouped.append({"hunk": hunk, "filepath": filepath, "matches": similar})
-    grouped.sort(
-        key=lambda group: (
-            -group["matches"][0]["similarity"],
-            -len(group["matches"])
-        )
-    )
-    selected = grouped[:MAX_CANDIDATE_HUNKS]
+
     logger.info(
-        "batch_retrieval_complete",
-        grouped_hunks=len(grouped),
-        selected_hunks=len(selected),
-        total_hunks=len(eligible_hunks)
+        "pr_retrieval_complete",
+        total_hunks=total_hunks,
+        hunks_with_matches=len(grouped)
     )
-    return selected, len(eligible_hunks)
+    return grouped, total_hunks
 
 
-def is_low_signal_path(filepath: str) -> bool:
-    filename = filepath.rsplit("/", 1)[-1].lower()
-    return filename in LOW_SIGNAL_FILENAMES or filename.endswith((".min.js", ".min.css"))
-
-
-def prepare_review_hunks(
+async def retrieve_for_hunks(
     hunks: List[Tuple[str, str]],
-    limit: int = MAX_REVIEW_WINDOWS_PER_PR
-) -> Tuple[List[Tuple[str, str]], int]:
-    """Bound hunk size, then sample review windows across files and diff positions."""
-    windows_by_file: Dict[str, List[Tuple[int, str]]] = {}
-    oversized_hunks = 0
-    skipped_low_signal = 0
-    window_index = 0
-
-    for filepath, hunk in hunks:
-        if is_low_signal_path(filepath):
-            skipped_low_signal += 1
-            continue
-        windows = _split_hunk_into_windows(hunk)
-        if len(windows) > 1:
-            oversized_hunks += 1
-        file_windows = windows_by_file.setdefault(filepath, [])
-        for window in windows:
-            file_windows.append((window_index, window))
-            window_index += 1
-
-    total_windows = window_index
-    if total_windows <= limit:
-        selected = [
-            (filepath, hunk)
-            for filepath, windows in windows_by_file.items()
-            for _, hunk in windows
-        ]
-    else:
-        files = list(windows_by_file)
-        allocations = {filepath: 1 for filepath in files}
-        if len(files) > limit:
-            selected_file_indices = _evenly_spaced_indices(len(files), limit)
-            allocations = {files[index]: 1 for index in selected_file_indices}
-        else:
-            remaining = limit - len(files)
-            while remaining:
-                eligible_files = [
-                    filepath for filepath in files
-                    if allocations[filepath] < len(windows_by_file[filepath])
-                ]
-                if not eligible_files:
-                    break
-                filepath = max(
-                    eligible_files,
-                    key=lambda path: len(windows_by_file[path]) / allocations[path]
-                )
-                allocations[filepath] += 1
-                remaining -= 1
-
-        selected_with_indices = []
-        for filepath, allocation in allocations.items():
-            windows = windows_by_file[filepath]
-            for index in _evenly_spaced_indices(len(windows), allocation):
-                original_index, hunk = windows[index]
-                selected_with_indices.append((original_index, filepath, hunk))
-        selected_with_indices.sort(key=lambda item: item[0])
-        selected = [(filepath, hunk) for _, filepath, hunk in selected_with_indices]
-
-    logger.info(
-        "pr_review_windows_prepared",
-        original_hunks=len(hunks),
-        reviewable_windows=total_windows,
-        selected_windows=len(selected),
-        oversized_hunks_split=oversized_hunks,
-        low_signal_hunks_skipped=skipped_low_signal
-    )
-    return selected, total_windows
-
-
-def _evenly_spaced_indices(length: int, count: int) -> List[int]:
-    if count <= 0 or length <= 0:
-        return []
-    if count == 1:
-        return [length // 2]
-    return [round(index * (length - 1) / (count - 1)) for index in range(count)]
-
-
-def _split_hunk_into_windows(hunk: str) -> List[str]:
-    lines = hunk.splitlines()
-    if not lines:
-        return []
-    match = HUNK_HEADER_RE.match(lines[0])
-    if not match:
-        logger.warning("diff_hunk_header_unrecognized")
-        return [hunk[:MAX_WINDOW_CHARS]]
-
-    old_start = int(match.group(1))
-    new_start = int(match.group(3))
-    section = match.group(5)[:200]
-    body = lines[1:]
-    bounded_body = [_bound_diff_line(line) for line in body]
-    if (
-        len(body) <= MAX_WINDOW_LINES
-        and len(lines[0]) + sum(len(line) + 1 for line in bounded_body) <= MAX_WINDOW_CHARS
-        and bounded_body == body
-    ):
-        return [hunk]
-
-    offsets = []
-    old_offset = 0
-    new_offset = 0
-    for line in body:
-        offsets.append((old_offset, new_offset))
-        if line.startswith((" ", "-")):
-            old_offset += 1
-        if line.startswith((" ", "+")):
-            new_offset += 1
-
-    windows = []
-    start = 0
-    while start < len(body):
-        end = start
-        chars = len(lines[0])
-        while end < len(body) and end - start < MAX_WINDOW_LINES:
-            line = bounded_body[end]
-            if end > start and chars + len(line) + 1 > MAX_WINDOW_CHARS:
-                break
-            chars += len(line) + 1
-            end += 1
-        if end == start:
-            end += 1
-
-        chunk = bounded_body[start:end]
-        if any(line.startswith(("+", "-")) for line in chunk):
-            old_count = sum(line.startswith((" ", "-")) for line in chunk)
-            new_count = sum(line.startswith((" ", "+")) for line in chunk)
-            chunk_header = (
-                f"@@ -{old_start + offsets[start][0]},{old_count} "
-                f"+{new_start + offsets[start][1]},{new_count} @@{section}"
+    repo_owner: str,
+    repo_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Retrieve similar past review comments for a pre-split list of (filepath, hunk) tuples.
+    Used by process_pr_batch which receives its batch from the fan-out task."""
+    grouped = []
+    for i, (filepath, hunk) in enumerate(hunks):
+        if i > 0:
+            await asyncio.sleep(EMBED_SLEEP_SECONDS)
+        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+        if similar:
+            logger.info(
+                "hunk_matched",
+                hunk_index=i,
+                filepath=filepath,
+                matches=len(similar),
+                top_similarity=similar[0]["similarity"]
             )
-            windows.append("\n".join([chunk_header] + chunk))
-
-        if end == len(body):
-            break
-        start = max(start + 1, end - WINDOW_OVERLAP_LINES)
-
-    return windows or ["\n".join([lines[0]] + bounded_body[:MAX_WINDOW_LINES])]
-
-
-def _bound_diff_line(line: str) -> str:
-    if len(line) <= MAX_DIFF_LINE_CHARS:
-        return line
-    prefix = line[:1] if line[:1] in ("+", "-", " ") else ""
-    content = line[len(prefix):]
-    keep = (MAX_DIFF_LINE_CHARS - len(prefix) - len("...[line clipped]...")) // 2
-    return prefix + content[:keep] + "...[line clipped]..." + content[-keep:]
-
-
-async def _embed_hunks_with_retry(hunks: List[str]) -> List[List[float]]:
-    for attempt in range(1, 4):
-        try:
-            return embed_texts(hunks)
-        except RateLimitError:
-            if attempt == 3:
-                raise
-            logger.warning(
-                "voyage_rate_limited_retrying_batch",
-                attempt=attempt,
-                wait_seconds=65
-            )
-            await asyncio.sleep(65)
-    return []
+            for s in similar:
+                s["triggered_by_hunk"] = hunk
+                s["triggered_by_file"] = filepath
+            grouped.append({"hunk": hunk, "filepath": filepath, "matches": similar})
+    logger.info("batch_retrieval_complete", grouped_hunks=len(grouped), total_hunks=len(hunks))
+    return grouped, len(hunks)
 
 
 def split_diff_into_hunks(diff: str) -> List[Tuple[str, str]]:

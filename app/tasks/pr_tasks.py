@@ -1,18 +1,19 @@
 import asyncio
 import structlog
+from billiard.exceptions import SoftTimeLimitExceeded
 from app.core.celery_app import celery_app
 from app.services.github_client import fetch_pr_diff, fetch_compare_diff
-from app.services.retrieval import (
-    retrieve_for_hunks,
-    split_diff_into_hunks,
-    prepare_review_hunks,
-)
-from app.services.synthesizer import synthesize_feedback_for_hunks
+from app.services.retrieval import retrieve_for_hunks, split_diff_into_hunks, EMBED_SLEEP_SECONDS
+from app.services.synthesizer import synthesize_feedback
 from app.services.github_comment import post_pr_comment
 from app.core.database import AsyncSessionLocal
 from app.models.failed_pr import FailedPR
 
 logger = structlog.get_logger()
+
+BATCH_SIZE = 10
+SYNTHESIS_SLEEP_SECONDS = EMBED_SLEEP_SECONDS * 2
+
 
 async def _fan_out_async(
     pr_number: int,
@@ -33,41 +34,18 @@ async def _fan_out_async(
         logger.info("no_hunks_found", pr_number=pr_number)
         return {"status": "complete", "pr_number": pr_number, "total_batches": 0, "total_hunks": 0}
 
-    selected_hunks, total_windows = prepare_review_hunks(all_hunks)
-    if not selected_hunks:
-        logger.info("pr_review_skipped_no_reviewable_hunks_posting_status", pr_number=pr_number)
-        posted = await post_pr_comment(
-            owner, repo_name, pr_number, [],
-            review_skipped=True
-        )
-        return {
-            "status": "no_reviewable_hunks",
-            "pr_number": pr_number,
-            "total_hunks": total_hunks,
-            "comment_posted": posted
-        }
+    batches = [all_hunks[i:i + BATCH_SIZE] for i in range(0, total_hunks, BATCH_SIZE)]
+    total_batches = len(batches)
 
-    if total_windows > len(selected_hunks):
-        logger.warning(
-            "pr_review_windows_sampled",
-            pr_number=pr_number,
-            total_windows=total_windows,
-            sampled_windows=len(selected_hunks)
+    for batch_num, batch in enumerate(batches, 1):
+        hunks_data = [{"filepath": f, "hunk": h} for f, h in batch]
+        process_pr_batch.delay(
+            pr_number, repo_name, owner,
+            hunks_data, batch_num, total_batches, total_hunks
         )
-    hunks_data = [{"filepath": filepath, "hunk": hunk} for filepath, hunk in selected_hunks]
-    process_pr_batch.delay(
-        pr_number, repo_name, owner,
-        hunks_data, 1, 1, total_windows
-    )
 
-    logger.info(
-        "pr_batches_queued",
-        pr_number=pr_number,
-        total_batches=1,
-        total_hunks=total_windows,
-        hunks_queued=len(hunks_data)
-    )
-    return {"status": "batched", "pr_number": pr_number, "total_batches": 1, "total_hunks": total_windows}
+    logger.info("pr_batches_queued", pr_number=pr_number, total_batches=total_batches, total_hunks=total_hunks)
+    return {"status": "batched", "pr_number": pr_number, "total_batches": total_batches, "total_hunks": total_hunks}
 
 
 async def _process_batch_async(
@@ -80,7 +58,7 @@ async def _process_batch_async(
     total_hunks: int
 ) -> dict:
     hunks = [(d["filepath"], d["hunk"]) for d in hunks_data]
-    hunk_groups, hunks_scanned = await retrieve_for_hunks(hunks, owner, repo_name)
+    hunk_groups, _ = await retrieve_for_hunks(hunks, owner, repo_name)
     batch_matches = sum(len(g["matches"]) for g in hunk_groups)
 
     logger.info(
@@ -91,51 +69,37 @@ async def _process_batch_async(
         similar_comments_found=batch_matches
     )
 
-    feedback = await synthesize_feedback_for_hunks(hunk_groups)
-    if feedback is None:
-        logger.warning(
-            "pr_analysis_unavailable_posting_status_comment",
-            pr_number=pr_number,
-            batch_num=batch_num
-        )
-        hunks_omitted = max(0, total_hunks - hunks_scanned)
-        posted = await post_pr_comment(
-            owner, repo_name, pr_number, [],
-            hunks_scanned=hunks_scanned,
-            batch_num=batch_num,
-            total_batches=total_batches,
-            hunks_omitted=hunks_omitted,
-            analysis_unavailable=True
-        )
-        return {
-            "status": "synthesis_unavailable",
-            "pr_number": pr_number,
-            "batch_num": batch_num,
-            "concerns_identified": 0,
-            "comment_posted": posted
-        }
+    feedback = []
+    partial = False
+    try:
+        for i, group in enumerate(hunk_groups):
+            if i > 0:
+                await asyncio.sleep(SYNTHESIS_SLEEP_SECONDS)
+            hunk_feedback = await synthesize_feedback(group["hunk"], group["matches"])
+            feedback.extend(hunk_feedback)
+    except SoftTimeLimitExceeded:
+        partial = True
+        logger.warning("batch_soft_time_limit_hit", pr_number=pr_number, batch_num=batch_num)
 
     logger.info(
         "batch_synthesis_done",
         pr_number=pr_number,
         batch_num=batch_num,
         concerns_identified=len(feedback),
-        partial=False
+        partial=partial
     )
 
     posted = await post_pr_comment(
         owner, repo_name, pr_number, feedback,
         similar_count=batch_matches,
-        hunks_scanned=hunks_scanned,
+        hunks_scanned=len(hunks_data),
         batch_num=batch_num,
         total_batches=total_batches,
-        partial=False,
-        hunks_omitted=max(0, total_hunks - hunks_scanned)
+        partial=partial
     )
 
-    hunks_omitted = max(0, total_hunks - hunks_scanned)
     return {
-        "status": "partial" if hunks_omitted else "complete",
+        "status": "partial" if partial else "complete",
         "pr_number": pr_number,
         "batch_num": batch_num,
         "concerns_identified": len(feedback),

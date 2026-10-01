@@ -66,8 +66,7 @@ def format_feedback_as_markdown(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False,
-    hunks_omitted: int = 0
+    partial: bool = False
 ) -> str:
     if not feedback:
         return ""
@@ -78,17 +77,11 @@ def format_feedback_as_markdown(
     if total_batches > 1:
         stats_parts.append(f"Batch {batch_num} of {total_batches}")
     if hunks_scanned:
-        stats_parts.append(f"{hunks_scanned} review window{'s' if hunks_scanned != 1 else ''} scanned")
+        stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
     if similar_count:
         stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} matched")
     if stats_parts:
         lines.append(f"*{' · '.join(stats_parts)}*\n")
-    if hunks_omitted:
-        lines.append(
-            f"> This review sampled {hunks_scanned} of "
-            f"{hunks_scanned + hunks_omitted} review windows to stay within its budget; "
-            "the remaining windows were not reviewed.\n"
-        )
 
     for i, item in enumerate(feedback, 1):
         confidence_pct = int(item.get("confidence", 0) * 100)
@@ -196,24 +189,16 @@ def _no_concerns_body(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False,
-    hunks_omitted: int = 0
+    partial: bool = False
 ) -> str:
     stats_parts = []
     if total_batches > 1:
         stats_parts.append(f"Batch {batch_num} of {total_batches}")
     if hunks_scanned:
-        stats_parts.append(f"{hunks_scanned} review window{'s' if hunks_scanned != 1 else ''} scanned")
+        stats_parts.append(f"{hunks_scanned} hunk{'s' if hunks_scanned != 1 else ''} scanned")
     if similar_count > 0:
         stats_parts.append(f"{similar_count} similar past pattern{'s' if similar_count != 1 else ''} found")
     stats_line = f"*{' · '.join(stats_parts)}*\n\n" if stats_parts else ""
-    omitted_note = ""
-    if hunks_omitted:
-        omitted_note = (
-            f"> This review sampled {hunks_scanned} of "
-            f"{hunks_scanned + hunks_omitted} review windows to stay within its budget; "
-            "the remaining windows were not reviewed.\n\n"
-        )
 
     if similar_count > 0:
         conclusion = "No actionable concerns found — similar patterns were retrieved but none applied to the current changes."
@@ -223,7 +208,6 @@ def _no_concerns_body(
     body = (
         "## CodeLens Pre-Review Analysis\n\n"
         + stats_line
-        + omitted_note
         + conclusion + "\n\n"
         "---\n"
         "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
@@ -231,32 +215,6 @@ def _no_concerns_body(
     if partial:
         body += PARTIAL_NOTICE
     return body
-
-
-def _analysis_unavailable_body(hunks_scanned: int, hunks_omitted: int) -> str:
-    scope = ""
-    if hunks_scanned:
-        scope = f"*{hunks_scanned} review window{'s' if hunks_scanned != 1 else ''} sampled*\n\n"
-    if hunks_omitted:
-        scope += f"> {hunks_omitted} additional review windows were not sampled.\n\n"
-    return (
-        "## CodeLens Pre-Review Analysis\n\n"
-        + scope
-        + "> Analysis could not be completed because the review service is busy or unavailable. "
-        "No findings were generated; this is not an all-clear.\n\n"
-        + "---\n"
-        + "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
-    )
-
-
-def _review_skipped_body() -> str:
-    return (
-        "## CodeLens Pre-Review Analysis\n\n"
-        "> No reviewable source-code sections were found. Dependency lockfiles and "
-        "minified assets are excluded from analysis; this is not an all-clear.\n\n"
-        "---\n"
-        "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
-    )
 
 
 async def post_pr_comment(
@@ -268,23 +226,13 @@ async def post_pr_comment(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False,
-    hunks_omitted: int = 0,
-    analysis_unavailable: bool = False,
-    review_skipped: bool = False
+    partial: bool = False
 ) -> bool:
-    if analysis_unavailable:
-        body = _analysis_unavailable_body(hunks_scanned, hunks_omitted)
-    elif review_skipped:
-        body = _review_skipped_body()
-    elif feedback:
-        body = format_feedback_as_markdown(
-            feedback, similar_count, hunks_scanned, batch_num, total_batches, partial, hunks_omitted
-        )
-    else:
-        body = _no_concerns_body(
-            similar_count, hunks_scanned, batch_num, total_batches, partial, hunks_omitted
-        )
+    body = (
+        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, batch_num, total_batches, partial)
+        if feedback
+        else _no_concerns_body(similar_count, hunks_scanned, batch_num, total_batches, partial)
+    )
 
     try:
         async with await get_github_client(owner, repo) as client:
