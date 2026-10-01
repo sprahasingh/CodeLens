@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import time
 import httpx
 import structlog
 from redis import asyncio as redis_async
@@ -13,6 +14,7 @@ logger = structlog.get_logger()
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_RETRIES = 2
+MAX_RETRY_AFTER_SECONDS = 10
 
 
 async def _claim_groq_request_slot() -> bool:
@@ -20,12 +22,24 @@ async def _claim_groq_request_slot() -> bool:
     key = f"codelens:groq:request-slot:{key_suffix}"
     try:
         async with redis_async.from_url(settings.redis_url) as client:
-            return bool(await client.set(
-                key,
-                "1",
-                ex=settings.groq_min_request_interval_seconds,
-                nx=True
-            ))
+            deadline = time.monotonic() + settings.groq_slot_wait_seconds
+            while True:
+                claimed = await client.set(
+                    key,
+                    "1",
+                    ex=settings.groq_min_request_interval_seconds,
+                    nx=True
+                )
+                if claimed:
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "groq_request_slot_wait_exhausted",
+                        wait_seconds=settings.groq_slot_wait_seconds
+                    )
+                    return False
+                await asyncio.sleep(min(0.25, remaining))
     except RedisError as exc:
         logger.warning("groq_rate_limiter_unavailable", error=str(exc))
         return True
@@ -62,8 +76,8 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
                     try:
                         wait = float(retry_after)
                     except ValueError:
-                        wait = 3
-                    if attempt == MAX_RETRIES or wait > 2:
+                        wait = MAX_RETRY_AFTER_SECONDS + 1
+                    if attempt == MAX_RETRIES or wait > MAX_RETRY_AFTER_SECONDS:
                         logger.warning(
                             "groq_rate_limited_skipping",
                             attempt=attempt,
@@ -72,6 +86,9 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
                         return None
                     logger.warning("groq_rate_limited_retrying", attempt=attempt, wait_seconds=wait)
                     await asyncio.sleep(wait)
+                    if not await _claim_groq_request_slot():
+                        logger.warning("groq_retry_skipped_slot_wait_exhausted")
+                        return None
                     continue
                 response.raise_for_status()
                 body = response.json()

@@ -103,3 +103,38 @@ async def test_synthesize_feedback_for_hunks_signals_unavailable_groq(monkeypatc
     groups = [{"filepath": "src/a.py", "hunk": "changed code", "matches": SIMILAR_COMMENTS}]
 
     assert await synthesizer.synthesize_feedback_for_hunks(groups) is None
+
+
+async def test_synthesize_feedback_for_hunks_enforces_prompt_budget(monkeypatch):
+    prompts = []
+
+    async def fake_call_groq_json(prompt, model=None):
+        prompts.append(prompt)
+        return {"concerns": []}
+
+    monkeypatch.setattr(synthesizer, "call_groq_json", fake_call_groq_json)
+    groups = [
+        {
+            "filepath": f"src/file_{index}.py",
+            "hunk": "+" + "code " * 3000,
+            "matches": [
+                {
+                    "similarity": 0.8,
+                    "body": "review comment " * 1000,
+                    "path": "src/previous.py",
+                }
+                for _ in range(5)
+            ],
+        }
+        for index in range(5)
+    ]
+
+    result = await synthesizer.synthesize_feedback_for_hunks(groups)
+
+    assert result == []
+    assert len(prompts) == 1
+    assert len(prompts[0]) <= synthesizer.MAX_BATCH_PROMPT_CHARS
+    assert "[2] File:" in prompts[0]
+    assert "[3] File:" not in prompts[0]
+    assert "[middle truncated]" in prompts[0]
+    assert "...[truncated]" in prompts[0]

@@ -33,3 +33,34 @@ async def test_retrieve_for_hunks_batches_embeddings_and_keeps_top_three(monkeyp
     assert embed_calls[0] == [hunk for path, hunk in hunks if path != "package-lock.json"]
     assert scanned == 4
     assert [group["filepath"] for group in selected] == ["src/b.py", "src/d.py", "src/c.py"]
+
+
+def test_prepare_review_hunks_splits_large_hunks_and_samples_late_changes():
+    body = "\n".join(f"+changed_line_{index}" for index in range(5000))
+    large_hunk = f"@@ -1,0 +1,5000 @@\n{body}"
+
+    selected, total_windows = retrieval.prepare_review_hunks([("src/big.py", large_hunk)])
+
+    assert total_windows > 10
+    assert len(selected) == 10
+    assert all(len(hunk.splitlines()) - 1 <= retrieval.MAX_WINDOW_LINES for _, hunk in selected)
+    assert all(len(hunk) <= retrieval.MAX_WINDOW_CHARS for _, hunk in selected)
+    assert retrieval.extract_starting_line(selected[-1][1]) > 4000
+
+
+def test_prepare_review_hunks_distributes_candidates_across_files():
+    hunks = [
+        ("src/first.py", f"@@ -{index},1 +{index},1 @@\n+first_{index}")
+        for index in range(1, 11)
+    ]
+    hunks.extend(
+        ("src/second.py", f"@@ -{index},1 +{index},1 @@\n+second_{index}")
+        for index in range(1, 11)
+    )
+
+    selected, total_windows = retrieval.prepare_review_hunks(hunks, limit=4)
+
+    assert total_windows == 20
+    assert len(selected) == 4
+    assert [filepath for filepath, _ in selected].count("src/first.py") == 2
+    assert [filepath for filepath, _ in selected].count("src/second.py") == 2

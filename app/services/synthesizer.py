@@ -4,6 +4,13 @@ from app.services.llm_client import call_groq_json
 
 logger = structlog.get_logger()
 
+MAX_SYNTHESIS_HUNKS = 3
+MAX_SOURCE_COMMENTS_PER_HUNK = 5
+MAX_PROMPT_HUNK_CHARS = 4000
+MAX_PROMPT_COMMENT_CHARS = 600
+MAX_PROMPT_PATH_CHARS = 200
+MAX_BATCH_PROMPT_CHARS = 28000
+
 SYNTHESIS_PROMPT = """You are a senior software engineer reviewing a pull request.
 
 The new code being reviewed:
@@ -113,22 +120,26 @@ async def synthesize_feedback_for_hunks(
     if not hunk_groups:
         return []
 
+    hunk_groups = hunk_groups[:MAX_SYNTHESIS_HUNKS]
     hunk_sections = []
     comments = []
     comment_sections = []
     comment_hunk_indices = []
     for hunk_index, group in enumerate(hunk_groups):
         hunk_sections.append(
-            f"[{hunk_index}] File: {group['filepath']}\n{group['hunk']}"
+            f"[{hunk_index}] File: "
+            f"{_prompt_excerpt(group['filepath'], MAX_PROMPT_PATH_CHARS)}\n"
+            f"{_prompt_excerpt(group['hunk'], MAX_PROMPT_HUNK_CHARS, preserve_ends=True)}"
         )
-        for comment in group["matches"]:
+        for comment in group["matches"][:MAX_SOURCE_COMMENTS_PER_HUNK]:
             comment_index = len(comments)
             comments.append(comment)
             comment_hunk_indices.append(hunk_index)
             comment_sections.append(
                 f"[{comment_index}] [candidate hunk {hunk_index}] "
                 f"[{comment['similarity']:.2f} similarity] "
-                f"{comment['body']} (from {comment['path']})"
+                f"{_prompt_excerpt(comment['body'], MAX_PROMPT_COMMENT_CHARS)} "
+                f"(from {_prompt_excerpt(comment['path'], MAX_PROMPT_PATH_CHARS)})"
             )
 
     prompt = BATCH_SYNTHESIS_PROMPT.format(
@@ -179,6 +190,20 @@ async def synthesize_feedback_for_hunks(
         "batch_synthesis_complete",
         candidate_hunks=len(hunk_groups),
         input_comments=len(comments),
-        output_concerns=len(feedback)
+        output_concerns=len(feedback),
+        prompt_chars=len(prompt),
+        prompt_char_budget=MAX_BATCH_PROMPT_CHARS
     )
     return feedback
+
+
+def _prompt_excerpt(value: str, max_chars: int, preserve_ends: bool = False) -> str:
+    if len(value) <= max_chars:
+        return value
+    if preserve_ends:
+        marker = "\n...[middle truncated]...\n"
+        available = max_chars - len(marker)
+        start_chars = available // 2
+        return value[:start_chars] + marker + value[-(available - start_chars):]
+    marker = "...[truncated]"
+    return value[:max_chars - len(marker)] + marker

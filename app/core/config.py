@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     groq_api_key: str
     groq_min_request_interval_seconds: int = 3
+    groq_slot_wait_seconds: int = 6
     ntfy_topic: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

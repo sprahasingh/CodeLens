@@ -52,6 +52,31 @@ async def test_claim_groq_request_slot_uses_shared_expiring_redis_key(monkeypatc
     assert calls[0][1:] == ("1", llm_client.settings.groq_min_request_interval_seconds, True)
 
 
+async def test_claim_groq_request_slot_stops_after_configured_wait(monkeypatch):
+    calls = []
+
+    class BusyRedisClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def set(self, *args, **kwargs):
+            calls.append(args)
+            return False
+
+    async def no_wait(_):
+        return None
+
+    monkeypatch.setattr(llm_client.redis_async, "from_url", lambda url: BusyRedisClient())
+    monkeypatch.setattr(llm_client.settings, "groq_slot_wait_seconds", 0)
+    monkeypatch.setattr(llm_client.asyncio, "sleep", no_wait)
+
+    assert await llm_client._claim_groq_request_slot() is False
+    assert len(calls) == 1
+
+
 async def test_call_groq_json_skips_when_shared_slot_is_unavailable(monkeypatch):
     async def deny_slot():
         return False
