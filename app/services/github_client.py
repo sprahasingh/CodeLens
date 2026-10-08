@@ -103,6 +103,20 @@ async def fetch_pr_diff(owner: str, repo: str, pr_number: int) -> str:
         return response.text
 
 
+async def fetch_pr_state(owner: str, repo: str, pr_number: int) -> dict:
+    """Return the current PR head and state for safe queued review checks."""
+    async with await get_github_client(owner, repo) as client:
+        response = await client.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+        response.raise_for_status()
+        pr = response.json()
+        return {"head_sha": pr["head"]["sha"], "state": pr["state"]}
+
+
+async def fetch_pr_head_sha(owner: str, repo: str, pr_number: int) -> str:
+    """Return current PR head SHA (kept for callers needing only the SHA)."""
+    return (await fetch_pr_state(owner, repo, pr_number))["head_sha"]
+
+
 async def fetch_compare_diff(owner: str, repo: str, before_sha: str, after_sha: str) -> str:
     """Fetch the diff between two commits — used on push to an open PR so only
     the newly pushed changes are scanned, not the entire PR diff."""

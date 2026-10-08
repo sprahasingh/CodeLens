@@ -1,3 +1,5 @@
+import pytest
+
 import app.services.synthesizer as synthesizer
 
 
@@ -47,11 +49,11 @@ async def test_synthesize_feedback_rejects_negative_and_out_of_range_source_indi
     assert result[0]["source_comments"] == [SIMILAR_COMMENTS[0]]
 
 
-async def test_synthesize_feedback_returns_empty_list_when_groq_call_fails(monkeypatch):
+async def test_synthesize_feedback_surfaces_groq_failure(monkeypatch):
     async def failing_call_groq_json(prompt, model=None):
         return None
 
     monkeypatch.setattr(synthesizer, "call_groq_json", failing_call_groq_json)
 
-    result = await synthesizer.synthesize_feedback("some hunk", SIMILAR_COMMENTS)
-    assert result == []
+    with pytest.raises(synthesizer.GroqSynthesisUnavailable):
+        await synthesizer.synthesize_feedback("some hunk", SIMILAR_COMMENTS)

@@ -36,13 +36,13 @@ flowchart TD
     C -- yes --> D[delta diff\nbefore...after SHA]
     C -- no --> E[full PR diff]
     D & E --> F[split into hunks\nfilter noise]
-    F --> G[fan-out: N × process_pr_batch\nin parallel]
+    F --> G[one bounded task per PR head\nsequential hunks]
     G --> H[embed · voyage-code-4\npgvector search]
     H --> I[LLM synthesis · Groq]
     I --> J[post PR comment\nfindings + evidence links]
 ```
 
-Large PRs are split into independent batches of 10 hunks and queued simultaneously. Each batch posts its own comment as soon as it finishes, so feedback from the first completed batch typically appears within 30 seconds. On `synchronize` events (new commits pushed to an open PR), CodeLens uses GitHub's three-dot compare endpoint to scan only the newly pushed commits, not the entire PR diff again. If a batch hits its time limit, whatever was synthesized gets posted immediately with a partial indicator so nothing is lost silently.
+Each PR head is handled by one worker task. Hunks are retrieved in small sequential groups, and a single comment is posted for the current commit. Obsolete queued commits are skipped before retrieval, and old tasks expire. The hunk and Groq request caps are configurable so a large PR cannot create an unbounded fan-out. On `synchronize` events, CodeLens uses GitHub's three-dot compare endpoint to scan only newly pushed commits. If a configured analysis limit is reached or Groq remains rate-limited after bounded retries, the comment clearly marks the analysis as incomplete.
 
 The posted comment shows its work. Every finding links back to the specific historical GitHub comment that informed it, providing provenance for the generated feedback.
 
@@ -52,7 +52,9 @@ The posted comment shows its work. Every finding links back to the specific hist
 - Embeds historical and new PR hunks with `voyage-code-4` and retrieves matches above the similarity floor
 - Generates findings grounded in the actual new code
 - Links findings to the historical GitHub comments used as evidence
-- Fans out large PRs into parallel batches of 10 hunks
+- Processes each PR head in one sequential, bounded worker task
+- Skips obsolete queued commits and expires old review jobs
+- Limits Groq concurrency, retries, and requests per PR with configuration
 - Processes only newly pushed commits on `synchronize` events
 - Evaluates against held-out reviewer comments using an independent LLM judge
 
@@ -109,7 +111,7 @@ What CodeLens posted as a PR comment:
 | SQLAlchemy + Alembic  | ORM and schema migrations                                                                     |
 | Voyage AI             | Embeddings: `voyage-code-4` for code retrieval, `voyage-4-lite` for natural-language matching |
 | Groq                  | LLM for synthesis and the evaluation judge (free tier, no billing account required)           |
-| Celery + Redis        | Background job queue with parallel batch fan-out (Upstash, free tier)                         |
+| Celery + Redis        | Bounded background review queue with a monitored single-instance worker (Upstash, free tier)  |
 | GitHub App + Webhooks | Auth, event delivery, HMAC-SHA256 signature verification                                      |
 | ntfy                  | Push notifications on new app installations                                                   |
 | structlog             | Structured logging with request-id tracing                                                    |
@@ -155,7 +157,7 @@ app/
   models/     SQLAlchemy models (repos, review comments, predictions, false negatives, processed PRs)
   routers/    FastAPI routes (repos, webhook, metrics)
   services/   retrieval, synthesis, ingestion, evaluation, GitHub client/auth, LLM client
-  tasks/      Celery task definitions (process_pr fan-out, process_pr_batch)
+  tasks/      Celery PR review task
   scripts/    backfills, corpus ingestion, and the held-out evaluation script
   static/     landing page
 alembic/      database migrations
@@ -181,7 +183,7 @@ uvicorn app.main:app --reload
 docker compose up --build
 ```
 
-Runs the API on `:8000`, a Celery worker, and Flower on `:5555`. It connects out to your existing managed Postgres and Redis (Neon and Upstash) through `.env`, so there are no local database containers, which matches how I actually run this. The GitHub App private key gets mounted read-only from the repo root; update the filename in `docker-compose.yml` if the key ever gets rotated.
+Runs the API on `:8000`, a Celery worker, and Flower on `127.0.0.1:5555`. Flower is bound to localhost; use an SSH tunnel when you need its dashboard on a remote instance. The worker supervisor logs a disk warning at the configurable `WORKER_DISK_WARNING_PERCENT` threshold (85% by default). It connects out to your existing managed Postgres and Redis (Neon and Upstash) through `.env`, so there are no local database containers. The GitHub App private key gets mounted read-only from the repo root; update the filename in `docker-compose.yml` if the key ever gets rotated.
 
 ### Tests
 

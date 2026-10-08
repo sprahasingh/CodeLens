@@ -4,6 +4,10 @@ from app.services.llm_client import call_groq_json
 
 logger = structlog.get_logger()
 
+
+class GroqSynthesisUnavailable(RuntimeError):
+    """Signals that synthesis failed after the client's bounded retries."""
+
 SYNTHESIS_PROMPT = """You are a senior software engineer reviewing a pull request.
 
 The new code being reviewed:
@@ -58,7 +62,7 @@ async def synthesize_feedback(
     result = await call_groq_json(prompt)
     if result is None:
         logger.error("synthesis_failed")
-        return []
+        raise GroqSynthesisUnavailable("Groq did not return a synthesis result")
 
     raw_feedback = result.get("concerns", [])
 

@@ -677,7 +677,7 @@
         </div>
         <div class="pr-comment-body">
           <div class="gh-h2">CodeLens Pre-Review Analysis</div>
-          <div class="gh-stats">Batch 1 of 2 · 10 hunks scanned · 4 similar past patterns matched</div>
+          <div class="gh-stats">10 hunks scanned · 4 similar past patterns matched</div>
           <div class="gh-divider"></div>
           <div class="gh-h3">Finding 1: Missing test assertion for the new error path</div>
           <div class="gh-meta-row">
@@ -725,12 +725,12 @@
       <div class="step">
         <div class="step-num">02</div>
         <h3>Open or push a PR</h3>
-        <p>On every <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">opened</code>, <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">reopened</code>, or <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">synchronize</code> event, the diff is split into parallel batches and queued for review.</p>
+        <p>On every <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">opened</code>, <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">reopened</code>, or <code style="font-family:var(--mono);font-size:0.82em;color:var(--accent)">synchronize</code> event, one bounded review job is queued for the PR head.</p>
       </div>
       <div class="step">
         <div class="step-num">03</div>
         <h3>Receive structured feedback</h3>
-        <p>Each batch retrieves similar past patterns, synthesizes concerns via LLM, and posts a grounded review comment directly on the PR.</p>
+        <p>The job retrieves similar past patterns, synthesizes concerns via Groq, and posts one grounded review comment directly on the current PR commit.</p>
       </div>
     </div>
   </div>
@@ -747,8 +747,8 @@
         <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         </div>
-        <h3>Parallel batch processing</h3>
-        <p>Large PRs are split into independent batches of 10 hunks and processed concurrently. Each batch posts its own comment as soon as it finishes.</p>
+        <h3>Bounded review jobs</h3>
+        <p>Each PR head uses one worker task. Hunk and Groq request caps keep processing within the free-tier budget, and obsolete commits are skipped.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
@@ -776,7 +776,7 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 15.5"/></svg>
         </div>
         <h3>Partial results on timeout</h3>
-        <p>If a batch hits its time limit, whatever was synthesized is posted immediately with a partial indicator. No work is lost silently.</p>
+        <p>When a configured analysis limit or provider rate limit stops synthesis early, CodeLens posts an explicit incomplete-analysis status.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
@@ -821,7 +821,7 @@
           </div>
           <div class="metric-card">
             <div class="metric-num">10</div>
-            <div class="metric-label">Hunks per batch, calibrated to fit in a 10-min task window</div>
+            <div class="metric-label">Default maximum hunks scanned per PR</div>
           </div>
           <div class="metric-card">
             <div class="metric-num"><span>&lt;</span>30s</div>

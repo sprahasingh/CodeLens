@@ -28,9 +28,30 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
+    broker_connection_retry=True,
     broker_connection_retry_on_startup=True,
-    task_soft_time_limit=600,   # 10 min: each batch is ≤10 hunks, well within budget
-    task_time_limit=900,        # 15 min: hard kill if soft limit handler hangs
+    broker_connection_max_retries=None,
+    broker_connection_timeout=10,
+    broker_heartbeat=30,
+    broker_transport_options={
+        "visibility_timeout": 1800,
+        "socket_keepalive": True,
+        "socket_connect_timeout": 10,
+        "health_check_interval": 30,
+    },
+    worker_prefetch_multiplier=1,
+    worker_concurrency=1,
+    worker_max_tasks_per_child=50,
+    task_acks_late=True,
+    # A hard-killed child is acknowledged once; it must not redeliver forever
+    # without incrementing Celery's bounded retry counter.
+    task_reject_on_worker_lost=False,
+    task_acks_on_failure_or_timeout=True,
+    task_soft_time_limit=900,
+    task_time_limit=960,
+    task_default_expires=settings.review_task_expires_seconds,
+    task_publish_retry=False,
+    worker_enable_remote_control=True,
 
     redis_backend_use_ssl={
         "ssl_cert_reqs": "required"

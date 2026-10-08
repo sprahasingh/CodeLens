@@ -1,14 +1,51 @@
+import asyncio
+import random
 import structlog
+import httpx
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any
 from app.services.github_auth import get_github_client
 from app.models.prediction import Prediction
 from app.core.database import AsyncSessionLocal
+from app.core.config import settings
 from app.services.retrieval import extract_starting_line
 
 logger = structlog.get_logger()
 
 COMMENT_HEADER = "## CodeLens Pre-Review Analysis\n\n"
 COMMENT_FOOTER = "\n\n---\n*This analysis was generated automatically by CodeLens based on historical review patterns.*"
+
+
+def _retry_after_seconds(value: str) -> float:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _comment_retry_delay(attempt: int, response=None) -> float:
+    cap = settings.github_comment_retry_max_seconds
+    exponential = settings.github_comment_retry_base_seconds * (2 ** attempt)
+    delay = min(cap, exponential * random.uniform(0.5, 1.5))
+    if response is not None:
+        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+        if retry_after is None and response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+            reset = _retry_after_seconds(response.headers.get("X-RateLimit-Reset"))
+            retry_after = reset - datetime.now(timezone.utc).timestamp() if reset is not None else None
+        if retry_after is not None:
+            if retry_after > cap:
+                return None
+            delay = max(delay, retry_after)
+    return min(cap, delay)
 
 
 def extract_relevant_lines(hunk: str, max_lines: int = 8) -> str:
@@ -66,7 +103,8 @@ def format_feedback_as_markdown(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    analysis_note: str = "",
 ) -> str:
     if not feedback:
         return ""
@@ -136,6 +174,8 @@ def format_feedback_as_markdown(
             lines.append("")
 
     lines.append(COMMENT_FOOTER)
+    if analysis_note:
+        lines.append(f"\n\n> **Analysis status:** {analysis_note}")
     if partial:
         lines.append(PARTIAL_NOTICE)
     return "\n".join(lines)
@@ -178,9 +218,8 @@ async def save_predictions(
     )
 
 PARTIAL_NOTICE = (
-    "\n\n> **Note:** This PR exceeded the analysis time budget. "
-    "The findings above cover the hunks processed before the limit was reached — "
-    "remaining hunks were not reviewed."
+    "\n\n> **Note:** This analysis is partial. Review the analysis status above "
+    "for the reason and the scope that was not completed."
 )
 
 
@@ -189,7 +228,8 @@ def _no_concerns_body(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    analysis_note: str = "",
 ) -> str:
     stats_parts = []
     if total_batches > 1:
@@ -212,6 +252,8 @@ def _no_concerns_body(
         "---\n"
         "*This analysis was generated automatically by CodeLens based on historical review patterns.*"
     )
+    if analysis_note:
+        body += f"\n\n> **Analysis status:** {analysis_note}"
     if partial:
         body += PARTIAL_NOTICE
     return body
@@ -226,21 +268,71 @@ async def post_pr_comment(
     hunks_scanned: int = 0,
     batch_num: int = 0,
     total_batches: int = 0,
-    partial: bool = False
+    partial: bool = False,
+    analysis_note: str = "",
+    head_sha: str = "",
 ) -> bool:
     body = (
-        format_feedback_as_markdown(feedback, similar_count, hunks_scanned, batch_num, total_batches, partial)
+        format_feedback_as_markdown(
+            feedback, similar_count, hunks_scanned, batch_num, total_batches, partial, analysis_note
+        )
         if feedback
-        else _no_concerns_body(similar_count, hunks_scanned, batch_num, total_batches, partial)
+        else _no_concerns_body(
+            similar_count, hunks_scanned, batch_num, total_batches, partial, analysis_note
+        )
     )
+    marker = f"<!-- codelens-review:{head_sha} -->" if head_sha else ""
+    if marker:
+        body = f"{marker}\n\n{body}"
 
     try:
         async with await get_github_client(owner, repo) as client:
-            response = await client.post(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
-                json={"body": body}
-            )
-            response.raise_for_status()
+            existing_comment_id = None
+            for attempt in range(settings.github_comment_max_retries + 1):
+                try:
+                    existing_comment_id = None
+                    if marker:
+                        comments_response = await client.get(
+                            f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+                            params={"per_page": 100, "sort": "created", "direction": "desc"},
+                        )
+                        comments_response.raise_for_status()
+                        for comment in comments_response.json():
+                            if marker in comment.get("body", ""):
+                                existing_comment_id = comment["id"]
+                                break
+
+                    if existing_comment_id:
+                        response = await client.patch(
+                            f"/repos/{owner}/{repo}/issues/comments/{existing_comment_id}",
+                            json={"body": body},
+                        )
+                    else:
+                        response = await client.post(
+                            f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+                            json={"body": body}
+                        )
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status_code = exc.response.status_code
+                    retryable = status_code == 429 or status_code in (500, 502, 503, 504) or (
+                        status_code == 403 and exc.response.headers.get("X-RateLimit-Remaining") == "0"
+                    )
+                    if not retryable or attempt >= settings.github_comment_max_retries:
+                        raise
+                    delay = _comment_retry_delay(attempt, exc.response)
+                    if delay is None:
+                        raise
+                    logger.warning("github_comment_retrying", pr_number=pr_number, status_code=status_code, attempt=attempt + 1, delay_seconds=round(delay, 2))
+                    await asyncio.sleep(delay)
+                except httpx.TransportError as exc:
+                    if attempt >= settings.github_comment_max_retries:
+                        raise
+                    delay = _comment_retry_delay(attempt)
+                    logger.warning("github_comment_network_retrying", pr_number=pr_number, error_type=type(exc).__name__, attempt=attempt + 1, delay_seconds=round(delay, 2))
+                    await asyncio.sleep(delay)
+
             comment_url = response.json().get("html_url", "")
             logger.info(
                 "pr_comment_posted",
@@ -249,7 +341,10 @@ async def post_pr_comment(
                 repo=repo,
                 comment_url=comment_url
             )
-            await save_predictions(owner, repo, pr_number, feedback)
+            try:
+                await save_predictions(owner, repo, pr_number, feedback)
+            except Exception as exc:
+                logger.error("pr_prediction_save_failed_after_comment", pr_number=pr_number, error_type=type(exc).__name__)
             return True
 
     except Exception as e:
