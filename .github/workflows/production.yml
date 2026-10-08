@@ -52,6 +52,39 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run full test suite
         run: python -m pytest -q
+      - name: Set up Buildx for pull request image test
+        if: github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@v4.3.0
+      - name: Build production image for pull request test only
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: codelens:pr-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Run full suite inside pull request image
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE: codelens:pr-${{ github.sha }}
+        run: >-
+          docker run --rm --network none
+          --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
+          --env DEBUG=false
+          --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
+          --env REDIS_URL=redis://127.0.0.1:6379/0
+          --env GITHUB_APP_ID=1
+          --env GITHUB_INSTALLATION_ID=1
+          --env GITHUB_PRIVATE_KEY=test-key
+          --env VOYAGE_API_KEY=test-voyage-key
+          --env GROQ_API_KEY=test-groq-key
+          "$IMAGE" python -m pytest -q -p no:cacheprovider -c /tmp/pytest.ini /tmp/codelens-tests
 
   publish:
     needs: test
