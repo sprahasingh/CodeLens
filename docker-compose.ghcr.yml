@@ -1,0 +1,15 @@
+# Deployment-only override. The digest is supplied by the deployment script.
+# !reset removes the local build definition so this Compose view cannot build.
+services:
+  web:
+    image: ${CODELENS_IMAGE:?CODELENS_IMAGE must be an immutable GHCR digest reference}
+    build: !reset null
+    pull_policy: never
+  worker:
+    image: ${CODELENS_IMAGE:?CODELENS_IMAGE must be an immutable GHCR digest reference}
+    build: !reset null
+    pull_policy: never
+  flower:
+    image: ${CODELENS_IMAGE:?CODELENS_IMAGE must be an immutable GHCR digest reference}
+    build: !reset null
+    pull_policy: never
