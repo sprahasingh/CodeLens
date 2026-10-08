@@ -1,0 +1,51 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    # requirements.txt is fully unpinned and there is no lockfile, so
+    # version bumps would not identify a reproducible installed version.
+    # Security updates remain enabled independently of this limit.
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - security
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    # No workflow files currently exist; keep this security-only if added later.
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - security
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
