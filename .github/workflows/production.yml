@@ -1,0 +1,261 @@
+name: Test, publish, and deploy CodeLens
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Production action
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+        required: true
+      rollback_run_id:
+        description: Optional saved deployment id for rollback; blank selects latest
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codelens-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1/test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      GITHUB_APP_ID: "1"
+      GITHUB_INSTALLATION_ID: "1"
+      GITHUB_PRIVATE_KEY: "test-key"
+      VOYAGE_API_KEY: "test-voyage-key"
+      GROQ_API_KEY: "test-groq-key"
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run full test suite
+        run: python -m pytest -q
+
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Normalize GHCR image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/codelens" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4.3.0
+      - name: Build local production image for isolated tests
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: codelens:ci-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run full suite inside the exact production image
+        env:
+          IMAGE: codelens:ci-${{ github.sha }}
+        run: >-
+          docker run --rm --network none
+          --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --env DEBUG=false
+          --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
+          --env REDIS_URL=redis://127.0.0.1:6379/0
+          --env GITHUB_APP_ID=1
+          --env GITHUB_INSTALLATION_ID=1
+          --env GITHUB_PRIVATE_KEY=test-key
+          --env VOYAGE_API_KEY=test-voyage-key
+          --env GROQ_API_KEY=test-groq-key
+          "$IMAGE" python -m pytest -q -p no:cacheprovider /tmp/codelens-tests
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an existing commit tag
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "::error::The commit-SHA image tag already exists; refusing to overwrite it."
+            exit 1
+          fi
+      - name: Build and publish immutable commit image
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: publish
+    if: >-
+      github.ref == 'refs/heads/main' && needs.publish.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy') ||
+      (github.event_name == 'push' && vars.CODELENS_AUTO_DEPLOY == 'true'))
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure verified SSH host key
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/codelens-ssh"
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/codelens-ssh/id_ed25519"
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > "$RUNNER_TEMP/codelens-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/codelens-ssh/id_ed25519" "$RUNNER_TEMP/codelens-ssh/known_hosts"
+      - name: Stage deployment helper and short-lived registry token
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          SSH_DIR: ${{ runner.temp }}/codelens-ssh
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$EC2_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          host="$EC2_USER@$EC2_HOST"
+          remote_script="/tmp/codelens-deploy-${RUN_ID}-${RUN_ATTEMPT}.sh"
+          remote_override="/tmp/codelens-compose-${RUN_ID}-${RUN_ATTEMPT}.yml"
+          remote_token="/tmp/codelens-ghcr-token-${RUN_ID}-${RUN_ATTEMPT}"
+          ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          scp "${ssh_args[@]}" scripts/deploy_ghcr.sh "$host:$remote_script"
+          scp "${ssh_args[@]}" docker-compose.ghcr.yml "$host:$remote_override"
+          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_args[@]}" "$host" "umask 077; cat > '$remote_token'"
+          echo "remote_script=$remote_script" >> "$GITHUB_ENV"
+          echo "remote_override=$remote_override" >> "$GITHUB_ENV"
+          echo "remote_token=$remote_token" >> "$GITHUB_ENV"
+          echo "remote_host=$host" >> "$GITHUB_ENV"
+          echo "ghcr_username=$GHCR_USERNAME" >> "$GITHUB_ENV"
+          echo "ssh_key_path=$SSH_DIR/id_ed25519" >> "$GITHUB_ENV"
+          echo "ssh_known_hosts=$SSH_DIR/known_hosts" >> "$GITHUB_ENV"
+      - name: Deploy exact published image digest
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}@${{ needs.publish.outputs.digest }}
+          EXPECTED_SHA: ${{ github.sha }}
+          GHCR_USERNAME: ${{ github.actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE" =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*/codelens@sha256:[a-f0-9]{64}$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$GHCR_USERNAME" =~ ^[A-Za-z0-9-]+$ ]]
+          ssh_args=(-i "$ssh_key_path" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_known_hosts")
+          ssh "${ssh_args[@]}" "$remote_host" "CODELENS_DEPLOYMENT_ID='${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' bash '$remote_script' deploy '$IMAGE' '$EXPECTED_SHA' '$GHCR_USERNAME' '$remote_token' '$remote_override'"
+      - name: Remove staged deployment credentials and helper files
+        if: always()
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SSH_DIR: ${{ runner.temp }}/codelens-ssh
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$EC2_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          host="$EC2_USER@$EC2_HOST"
+          ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          ssh "${ssh_args[@]}" "$host" "rm -f '/tmp/codelens-deploy-${RUN_ID}-${RUN_ATTEMPT}.sh' '/tmp/codelens-compose-${RUN_ID}-${RUN_ATTEMPT}.yml' '/tmp/codelens-ghcr-token-${RUN_ID}-${RUN_ATTEMPT}'" || true
+
+  rollback:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure verified SSH host key
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/codelens-ssh"
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/codelens-ssh/id_ed25519"
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > "$RUNNER_TEMP/codelens-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/codelens-ssh/id_ed25519" "$RUNNER_TEMP/codelens-ssh/known_hosts"
+      - name: Roll back to saved production image IDs
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          SSH_DIR: ${{ runner.temp }}/codelens-ssh
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$EC2_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -z "$ROLLBACK_RUN_ID" || "$ROLLBACK_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]
+          host="$EC2_USER@$EC2_HOST"
+          remote_script="/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.sh"
+          remote_override="/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.yml"
+          ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          scp "${ssh_args[@]}" scripts/deploy_ghcr.sh "$host:$remote_script"
+          scp "${ssh_args[@]}" docker-compose.ghcr.yml "$host:$remote_override"
+          ssh "${ssh_args[@]}" "$host" "bash '$remote_script' rollback '${ROLLBACK_RUN_ID:-latest}' '$remote_override'"
+      - name: Remove staged rollback helpers
+        if: always()
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          SSH_DIR: ${{ runner.temp }}/codelens-ssh
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          host="$EC2_USER@$EC2_HOST"
+          ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          ssh "${ssh_args[@]}" "$host" "rm -f '/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.sh' '/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.yml'" || true
