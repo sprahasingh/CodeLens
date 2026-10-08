@@ -62,7 +62,7 @@ def test_format_feedback_as_markdown_includes_concern_confidence_and_provenance_
     assert "85%" in markdown
     assert "app/foo.py" in markdown
     assert "72%" in markdown
-    assert "[view original](https://github.com/org/repo/pull/1#discussion_r1)" in markdown
+    assert "[view](https://github.com/org/repo/pull/1#discussion_r1)" in markdown
     assert "*(inferred)*" not in markdown
 
 

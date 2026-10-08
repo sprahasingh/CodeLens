@@ -19,8 +19,8 @@ index abc123..def456 100644
 def test_split_diff_into_hunks_returns_each_hunk_separately():
     hunks = split_diff_into_hunks(SAMPLE_DIFF)
     assert len(hunks) == 2
-    assert hunks[0].startswith("@@ -10,6 +10,9 @@")
-    assert hunks[1].startswith("@@ -40,3 +43,4 @@")
+    assert hunks[0][1].startswith("@@ -10,6 +10,9 @@")
+    assert hunks[1][1].startswith("@@ -40,3 +43,4 @@")
 
 
 def test_split_diff_into_hunks_drops_hunks_below_length_floor():

@@ -68,3 +68,31 @@ def test_webhook_ignores_unhandled_event_types(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
+
+
+def test_duplicate_pr_webhook_queues_only_once(monkeypatch):
+    from app.routers import webhook
+
+    claims = iter([True, False])
+    queued = []
+
+    async def fake_claim(*args):
+        return next(claims)
+
+    monkeypatch.setattr(webhook, "claim_pr_processing", fake_claim)
+    monkeypatch.setattr(webhook.process_pr, "apply_async", lambda **kwargs: queued.append(kwargs))
+    monkeypatch.setattr(settings, "webhook_secret", "")
+    payload = {
+        "action": "opened",
+        "repository": {"name": "repo", "owner": {"login": "owner"}},
+        "pull_request": {"number": 17, "head": {"sha": "abc123"}},
+    }
+    headers = {"X-GitHub-Event": "pull_request", "Content-Type": "application/json"}
+
+    first = client.post("/webhook", json=payload, headers=headers)
+    second = client.post("/webhook", json=payload, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "queued"
+    assert second.status_code == 200 and second.json()["status"] == "duplicate_skipped"
+    assert len(queued) == 1
+    assert queued[0]["kwargs"]["expected_head_sha"] == "abc123"

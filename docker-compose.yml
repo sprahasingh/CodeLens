@@ -1,8 +1,16 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   web:
     build: .
+    restart: unless-stopped
+    logging: *default-logging
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
@@ -14,7 +22,16 @@ services:
 
   worker:
     build: .
-    command: celery -A app.core.celery_app worker --loglevel=info
+    command: ["python", "-m", "app.core.worker_supervisor"]
+    restart: unless-stopped
+    stop_grace_period: 16m30s
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.core.worker_supervisor", "--check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     env_file:
       - .env
     environment:
@@ -25,8 +42,10 @@ services:
   flower:
     build: .
     command: celery -A app.core.celery_app flower --port=5555
+    restart: unless-stopped
+    logging: *default-logging
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     env_file:
       - .env
     environment:

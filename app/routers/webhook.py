@@ -3,6 +3,7 @@ import hashlib
 import structlog
 import httpx
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
 from app.tasks.pr_tasks import process_pr
 from app.core.config import settings
@@ -48,6 +49,18 @@ async def claim_pr_processing(owner: str, repo_name: str, pr_number: int, head_s
     return result.rowcount > 0
 
 
+async def release_pr_claim(owner: str, repo_name: str, pr_number: int, head_sha: str) -> None:
+    """Release a claim only when publishing the corresponding task failed."""
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(ProcessedPR).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+        ))
+        await session.commit()
+
+
 @router.post("/webhook")
 async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     payload_bytes = await request.body()
@@ -83,12 +96,27 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
                 )
                 return {"status": "duplicate_skipped"}
 
-            if action == "synchronize":
-                before_sha = payload.get("before")
-                after_sha = payload.get("after")
-                process_pr.delay(pr_number, repo_name, owner, before_sha=before_sha, after_sha=after_sha)
-            else:
-                process_pr.delay(pr_number, repo_name, owner)
+            before_sha = payload.get("before") if action == "synchronize" else None
+            after_sha = payload.get("after") if action == "synchronize" else None
+            try:
+                process_pr.apply_async(
+                    args=(pr_number, repo_name, owner),
+                    kwargs={
+                        "expected_head_sha": head_sha,
+                        "before_sha": before_sha,
+                        "after_sha": after_sha,
+                    },
+                    expires=settings.review_task_expires_seconds,
+                )
+            except Exception as exc:
+                await release_pr_claim(owner, repo_name, pr_number, head_sha)
+                logger.error(
+                    "pr_job_publish_failed",
+                    pr_number=pr_number,
+                    repo=repo_name,
+                    error=str(exc),
+                )
+                raise HTTPException(status_code=503, detail="Review job could not be queued") from exc
 
             logger.info("pr_job_queued", pr_number=pr_number, repo=repo_name, head_sha=head_sha, action=action)
             return {"status": "queued"}
