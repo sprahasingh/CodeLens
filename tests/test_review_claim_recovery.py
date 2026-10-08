@@ -185,7 +185,7 @@ async def test_recovery_resumes_after_last_completed_synthesis_group(monkeypatch
             for path, text in hunks
         ], len(hunks))
 
-    async def synthesize(hunk, _matches, changed_context=""):
+    async def synthesize(hunk, _matches, changed_context="", request_context=None):
         nonlocal fail_second_group_once
         synthesis_inputs.append(hunk)
         if "second new" in hunk and fail_second_group_once:

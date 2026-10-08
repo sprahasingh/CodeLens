@@ -15,7 +15,7 @@ async def test_synthesize_feedback_returns_empty_list_when_no_similar_comments()
 
 
 async def test_synthesize_feedback_drops_concerns_with_empty_concern_text(monkeypatch):
-    async def fake_call_groq_json(prompt, model=None):
+    async def fake_call_groq_json(prompt, model=None, log_context=None):
         return {
             "concerns": [
                 {"concern": "", "source_indices": [0]},
@@ -37,7 +37,7 @@ async def test_synthesize_feedback_drops_concerns_with_empty_concern_text(monkey
 
 
 async def test_synthesize_feedback_rejects_negative_and_out_of_range_source_indices(monkeypatch):
-    async def fake_call_groq_json(prompt, model=None):
+    async def fake_call_groq_json(prompt, model=None, log_context=None):
         return {
             "concerns": [
                 {
@@ -58,10 +58,35 @@ async def test_synthesize_feedback_rejects_negative_and_out_of_range_source_indi
 
 
 async def test_synthesize_feedback_surfaces_groq_failure(monkeypatch):
-    async def failing_call_groq_json(prompt, model=None):
+    async def failing_call_groq_json(prompt, model=None, log_context=None):
         return None
 
     monkeypatch.setattr(synthesizer, "call_groq_json", failing_call_groq_json)
 
     with pytest.raises(synthesizer.GroqSynthesisUnavailable):
         await synthesizer.synthesize_feedback("some hunk", SIMILAR_COMMENTS)
+
+
+async def test_prompt_evidence_budget_keeps_relevance_order_and_bounds_context(monkeypatch):
+    captured = {}
+
+    async def fake_call_groq_json(prompt, model=None, log_context=None):
+        captured["prompt"] = prompt
+        return {"concerns": []}
+
+    monkeypatch.setattr(synthesizer, "call_groq_json", fake_call_groq_json)
+    monkeypatch.setattr(synthesizer.settings, "groq_max_evidence_comments_per_group", 1)
+    monkeypatch.setattr(synthesizer.settings, "groq_max_evidence_chars_per_group", 300)
+    monkeypatch.setattr(synthesizer.settings, "groq_max_changed_context_chars", 40)
+    comments = [
+        {"similarity": .99, "body": "TOP_RELEVANT evidence " + "x" * 500, "path": "top.py"},
+        {"similarity": .1, "body": "LOW_RELEVANCE_SENTINEL", "path": "low.py"},
+    ]
+    await synthesizer.synthesize_feedback("CRITICAL_HUNK", comments, "CONTEXT_SENTINEL" * 20)
+
+    prompt = captured["prompt"]
+    assert "CRITICAL_HUNK" in prompt
+    assert "TOP_RELEVANT" in prompt
+    assert "LOW_RELEVANCE_SENTINEL" not in prompt
+    assert "CONTEXT_SENTINEL" in prompt
+    assert "CONTEXT_SENTINEL" * 20 not in prompt
