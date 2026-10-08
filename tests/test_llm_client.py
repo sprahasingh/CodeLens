@@ -1,7 +1,8 @@
 import pytest
+from pydantic import ValidationError
 
 import app.services.llm_client as llm_client
-from app.core.config import settings
+from app.core.config import Settings, settings
 
 
 class FakeResponse:
@@ -37,6 +38,19 @@ class FakeClient:
     async def post(self, *args, **kwargs):
         type(self).calls += 1
         return type(self).responses.pop(0)
+
+
+def test_groq_concurrency_configuration_cannot_exceed_one():
+    with pytest.raises(ValidationError):
+        Settings(
+            database_url="postgresql+asyncpg://test:test@127.0.0.1/test",
+            github_app_id=1,
+            github_installation_id=1,
+            redis_url="redis://127.0.0.1:6379/0",
+            voyage_api_key="test",
+            groq_api_key="test",
+            groq_max_concurrency=2,
+        )
 
 
 @pytest.mark.asyncio

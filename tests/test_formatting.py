@@ -1,4 +1,8 @@
-from app.services.github_comment import extract_relevant_lines, format_feedback_as_markdown
+from app.services.github_comment import (
+    _no_concerns_body,
+    extract_relevant_lines,
+    format_feedback_as_markdown,
+)
 
 
 def test_extract_relevant_lines_keeps_only_added_lines():
@@ -47,6 +51,8 @@ def test_format_feedback_as_markdown_includes_concern_confidence_and_provenance_
             "source_comments": [
                 {
                     "path": "app/foo.py",
+                    "repo_owner": "org",
+                    "repo_name": "repo",
                     "line": 12,
                     "diff_hunk": "@@ -1,1 +1,2 @@\n+x = get()\n",
                     "body": "This can return None",
@@ -61,6 +67,7 @@ def test_format_feedback_as_markdown_includes_concern_confidence_and_provenance_
     assert "Missing None check" in markdown
     assert "85%" in markdown
     assert "app/foo.py" in markdown
+    assert "`org/repo`" in markdown
     assert "72%" in markdown
     assert "[view](https://github.com/org/repo/pull/1#discussion_r1)" in markdown
     assert "*(inferred)*" not in markdown
@@ -69,4 +76,17 @@ def test_format_feedback_as_markdown_includes_concern_confidence_and_provenance_
 def test_format_feedback_as_markdown_tags_inferred_concerns():
     feedback = [{"concern": "Guessed issue", "confidence": 0.5, "is_inference": True, "source_comments": []}]
     markdown = format_feedback_as_markdown(feedback)
-    assert "*(inferred)*" in markdown
+    assert "Suggested checks from historical patterns" in markdown
+    assert "speculative checks, not asserted defects" in markdown
+
+
+def test_cold_start_fallback_is_visible_and_explicit_about_history():
+    body = _no_concerns_body(
+        similar_count=0,
+        outcome="general_analysis_only",
+        review_summary="**Changed areas (1 files; +1/-0 lines):**\n- `src/a.py` (+1/-0)",
+    )
+    assert "General analysis only" in body
+    assert "No relevant indexed historical comments" in body
+    assert "not historical evidence" in body
+    assert "src/a.py" in body

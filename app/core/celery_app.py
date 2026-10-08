@@ -43,8 +43,8 @@ celery_app.conf.update(
     worker_concurrency=1,
     worker_max_tasks_per_child=50,
     task_acks_late=True,
-    # A hard-killed child is acknowledged once; it must not redeliver forever
-    # without incrementing Celery's bounded retry counter.
+    # Child-loss cases are recovered from durable review leases by the
+    # supervisor, avoiding Celery's unbounded worker-lost requeue loop.
     task_reject_on_worker_lost=False,
     task_acks_on_failure_or_timeout=True,
     task_soft_time_limit=900,

@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text
 from app.core.database import AsyncSessionLocal
 from app.services.evaluation import embed_with_retry
+from app.services.review_quality import historical_candidate_rank
 import re
 
 
@@ -19,7 +20,8 @@ async def find_similar_comments(
     hunk: str,
     repo_owner: str,
     repo_name: str,
-    limit: int = MAX_RESULTS
+    limit: int = MAX_RESULTS,
+    target_path: str = "",
 ) -> List[Dict[str, Any]]:
     """Find review comments from past PRs similar to the given code hunk.
 
@@ -33,11 +35,14 @@ async def find_similar_comments(
 
     query_vector = await embed_with_retry(hunk)
     query_vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
+    candidate_limit = max(limit * 4, limit)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
                 SELECT
+                    repo_owner,
+                    repo_name,
                     path,
                     line,
                     diff_hunk,
@@ -49,18 +54,20 @@ async def find_similar_comments(
                 WHERE
                     1 - (embedding <=> CAST(:query_vector AS vector)) >= :threshold
                 ORDER BY embedding <=> CAST(:query_vector AS vector)
-                LIMIT :limit
+                LIMIT :candidate_limit
             """),
             {
                 "query_vector": query_vector_str,
                 "threshold": SIMILARITY_THRESHOLD,
-                "limit": limit
+                "candidate_limit": candidate_limit
             }
         )
         rows = result.fetchall()
 
     results = [
         {
+            "repo_owner": row.repo_owner,
+            "repo_name": row.repo_name,
             "path": row.path,
             "line": row.line,
             "diff_hunk": row.diff_hunk,
@@ -72,7 +79,14 @@ async def find_similar_comments(
         for row in rows
     ]
 
+    results.sort(
+        key=lambda candidate: historical_candidate_rank(
+            hunk, target_path, candidate, repo_owner, repo_name,
+        ),
+        reverse=True,
+    )
     deduplicated = deduplicate_by_body(results)
+    deduplicated = deduplicated[:limit]
 
     logger.info(
         "similar_comments_found",
@@ -156,7 +170,7 @@ def deduplicate_by_body(
     seen_bodies = set()
     deduped = []
     for result in results:
-        normalized = result["body"].lower().strip()
+        normalized = (result.get("body") or "").lower().strip()
         if normalized not in seen_bodies:
             seen_bodies.add(normalized)
             deduped.append(result)
@@ -185,7 +199,9 @@ async def retrieve_for_pr(
     for i, (filepath, hunk) in enumerate(hunks):
         if i > 0:
             await asyncio.sleep(EMBED_SLEEP_SECONDS)
-        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+        similar = await find_similar_comments(
+            hunk, repo_owner, repo_name, target_path=filepath
+        )
         if similar:
             logger.info(
                 "hunk_matched",
@@ -218,7 +234,9 @@ async def retrieve_for_hunks(
     for i, (filepath, hunk) in enumerate(hunks):
         if i > 0:
             await asyncio.sleep(EMBED_SLEEP_SECONDS)
-        similar = await find_similar_comments(hunk, repo_owner, repo_name)
+        similar = await find_similar_comments(
+            hunk, repo_owner, repo_name, target_path=filepath
+        )
         if similar:
             logger.info(
                 "hunk_matched",

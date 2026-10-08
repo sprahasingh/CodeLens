@@ -15,6 +15,7 @@ def test_unresponsive_worker_is_replaced_when_broker_is_reachable(monkeypatch):
     monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *args, **kwargs: child)
     monkeypatch.setattr(supervisor, "_broker_available", lambda: True)
     monkeypatch.setattr(supervisor, "_worker_replies", lambda: False)
+    monkeypatch.setattr(supervisor, "_reconcile_due_reviews", lambda: 0)
     monkeypatch.setattr(supervisor.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(settings, "worker_health_check_seconds", 5)
     monkeypatch.setattr(settings, "worker_health_failures_before_restart", 3)
@@ -29,6 +30,49 @@ def test_unresponsive_worker_is_replaced_when_broker_is_reachable(monkeypatch):
     supervisor.stopping = False
     assert supervisor.run() == 0
     assert len(stop_calls) == 1
+
+
+def test_reconciler_runs_after_broker_recovers_without_worker_restart(monkeypatch, tmp_path):
+    class Child:
+        pid = 123
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    child = Child()
+    broker_checks = iter([False, True])
+    reconciled = []
+    ping_count = 0
+
+    def worker_ping():
+        nonlocal ping_count
+        ping_count += 1
+        if ping_count >= 1:
+            supervisor.stopping = True
+        return True
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *args, **kwargs: child)
+    monkeypatch.setattr(supervisor, "_broker_available", lambda: next(broker_checks))
+    monkeypatch.setattr(supervisor, "_worker_replies", worker_ping)
+    monkeypatch.setattr(supervisor, "_reconcile_due_reviews", lambda: reconciled.append(True) or 0)
+    monkeypatch.setattr(supervisor, "_check_disk_usage", lambda warning: warning)
+    monkeypatch.setattr(supervisor, "_sleep_or_stop", lambda _seconds: None)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(supervisor, "HEALTH_FILE", tmp_path / "healthy")
+    monkeypatch.setattr(settings, "worker_health_check_seconds", 5)
+    monkeypatch.setattr(settings, "review_reconcile_interval_seconds", 60)
+
+    def stop(process, grace_seconds=20):
+        process.returncode = -15
+        supervisor.stopping = True
+
+    monkeypatch.setattr(supervisor, "_stop_child", stop)
+    supervisor.stopping = False
+    assert supervisor.run() == 0
+    assert reconciled == [True]
+    assert supervisor.stopping is True
 
 
 def test_docker_health_check_fails_when_worker_ping_is_stale(monkeypatch, tmp_path):
