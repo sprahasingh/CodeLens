@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import pytest
 
@@ -93,3 +94,60 @@ async def test_github_comment_retry_exhaustion_is_bounded(monkeypatch):
     assert posted is False
     assert client.post_calls == 2
     assert len(sleeps) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_post_retries_by_updating_existing_sha_marker(monkeypatch):
+    class AmbiguousClient(FakeClient):
+        def __init__(self):
+            super().__init__([])
+            self.comments = []
+            self.patch_calls = 0
+            self.comment_pages = []
+
+        async def get(self, *_args, **kwargs):
+            page = kwargs["params"]["page"]
+            self.comment_pages.append(page)
+            comments = ([{"id": index, "body": "unrelated"} for index in range(100)]
+                        if page == 1 else list(self.comments))
+            return httpx.Response(
+                200, json=comments,
+                request=httpx.Request("GET", "https://api.github.com"),
+            )
+
+        async def post(self, *_args, **kwargs):
+            self.post_calls += 1
+            self.comments.append({"id": 7, "body": kwargs["json"]["body"]})
+            raise httpx.ReadTimeout("response lost after GitHub accepted the comment")
+
+        async def patch(self, *_args, **kwargs):
+            self.patch_calls += 1
+            self.comments[0]["body"] = kwargs["json"]["body"]
+            return response(200)
+
+    client = AmbiguousClient()
+
+    async def get_client(*_args):
+        return client
+
+    async def save(*_args):
+        return None
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(github_comment, "get_github_client", get_client)
+    monkeypatch.setattr(github_comment, "save_predictions", save)
+    monkeypatch.setattr(github_comment.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(settings, "github_comment_max_retries", 1)
+    monkeypatch.setattr(settings, "github_comment_retry_base_seconds", 0.0)
+    monkeypatch.setattr(settings, "github_comment_retry_max_seconds", 1.0)
+    monkeypatch.setattr(github_comment.random, "uniform", lambda _a, _b: 0.0)
+
+    posted = await github_comment.post_pr_comment("o", "r", 1, [], head_sha="sha")
+
+    assert posted is True
+    assert len(client.comments) == 1
+    assert client.post_calls == 1
+    assert client.patch_calls == 1
+    assert client.comment_pages == [1, 2, 1, 2]

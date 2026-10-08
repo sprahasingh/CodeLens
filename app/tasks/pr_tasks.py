@@ -1,7 +1,11 @@
 import asyncio
+import random
 import structlog
+import uuid
+import hashlib
+from datetime import datetime, timedelta
 from billiard.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import delete
+from sqlalchemy import and_, or_, select, update
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -12,33 +16,163 @@ from app.services.github_client import fetch_pr_diff, fetch_compare_diff, fetch_
 from app.services.github_comment import post_pr_comment
 from app.services.retrieval import retrieve_for_hunks, split_diff_into_hunks
 from app.services.synthesizer import GroqSynthesisUnavailable, synthesize_feedback
+from app.services.review_quality import (
+    changed_context_by_file,
+    cluster_repeated_candidate_groups,
+    deduplicate_findings,
+    format_change_overview,
+    historical_candidate_rank,
+    remove_context_contradicted_findings,
+    summarize_diff,
+)
 
 logger = structlog.get_logger()
 
 BATCH_SIZE = 10
 
 
-async def _record_failed_pr(owner: str, repo_name: str, pr_number: int, error: str, attempts: int) -> None:
-    async with AsyncSessionLocal() as session:
-        session.add(FailedPR(
-            repo_owner=owner,
-            repo_name=repo_name,
-            pr_number=pr_number,
-            error=error[:2000],
-            attempts=attempts
-        ))
-        await session.commit()
-
-
 async def _release_closed_pr_claim(owner: str, repo_name: str, pr_number: int, head_sha: str) -> None:
-    """Allow a closed-before-review PR to be queued when it is later reopened."""
+    """Leave a durable closed state so a later reopen webhook can reset it."""
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(ProcessedPR).where(
+        await session.execute(update(ProcessedPR).where(
             ProcessedPR.repo_owner == owner,
             ProcessedPR.repo_name == repo_name,
             ProcessedPR.pr_number == pr_number,
             ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+        ).values(
+            status="skipped_closed",
+            task_id=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            last_error=None,
         ))
+        await session.commit()
+
+
+async def _acquire_review_claim(owner, repo_name, pr_number, head_sha, task_id, lease_owner, redelivered):
+    now = datetime.utcnow()
+    claimable = or_(
+        ProcessedPR.status.in_(("queued", "expired", "abandoned")),
+        and_(ProcessedPR.status == "processing", ProcessedPR.lease_expires_at <= now),
+        and_(ProcessedPR.status == "processing", ProcessedPR.task_id == task_id, redelivered),
+    )
+    stmt = update(ProcessedPR).where(
+        ProcessedPR.repo_owner == owner,
+        ProcessedPR.repo_name == repo_name,
+        ProcessedPR.pr_number == pr_number,
+        ProcessedPR.head_sha == head_sha,
+        claimable,
+        ProcessedPR.attempts < settings.review_max_attempts,
+    ).values(
+        status="processing",
+        task_id=task_id,
+        lease_owner=lease_owner,
+        lease_expires_at=now + timedelta(seconds=settings.review_claim_lease_seconds),
+        attempts=ProcessedPR.attempts + 1,
+        last_error=None,
+    ).returning(ProcessedPR.attempts, ProcessedPR.review_payload)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        row = result.first()
+        await session.commit()
+    return {"attempts": row.attempts, "review_payload": row.review_payload} if row else None
+
+
+async def _save_review_checkpoint(owner, repo_name, pr_number, head_sha, lease_owner, payload):
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(update(ProcessedPR).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+            ProcessedPR.lease_owner == lease_owner,
+        ).values(review_payload=payload))
+        await session.commit()
+    if result.rowcount != 1:
+        raise RuntimeError("review claim ownership changed before checkpoint")
+
+
+async def _assert_review_claim(owner, repo_name, pr_number, head_sha, lease_owner):
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(ProcessedPR.id).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+            ProcessedPR.lease_owner == lease_owner,
+            ProcessedPR.lease_expires_at > datetime.utcnow(),
+        ))
+        owns_claim = result.first() is not None
+    if not owns_claim:
+        raise RuntimeError("review claim expired or was fenced by another worker")
+
+
+async def _finish_review_claim(owner, repo_name, pr_number, head_sha, lease_owner, status, error=None):
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(update(ProcessedPR).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+            ProcessedPR.lease_owner == lease_owner,
+        ).values(
+            status=status,
+            task_id=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            last_error=error[:2000] if error else None,
+        ))
+        await session.commit()
+    return result.rowcount == 1
+
+
+async def _release_claim_for_retry(owner, repo_name, pr_number, head_sha, lease_owner):
+    async with AsyncSessionLocal() as session:
+        await session.execute(update(ProcessedPR).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+            ProcessedPR.lease_owner == lease_owner,
+        ).values(
+            status="queued",
+            task_id=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            dispatched_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+
+async def _record_claim_failure(owner, repo_name, pr_number, head_sha, lease_owner, error, attempts):
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(update(ProcessedPR).where(
+            ProcessedPR.repo_owner == owner,
+            ProcessedPR.repo_name == repo_name,
+            ProcessedPR.pr_number == pr_number,
+            ProcessedPR.head_sha == head_sha,
+            ProcessedPR.status == "processing",
+            ProcessedPR.lease_owner == lease_owner,
+        ).values(
+            status="failed",
+            task_id=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            last_error=error[:2000],
+        ))
+        if result.rowcount == 1:
+            session.add(FailedPR(
+                repo_owner=owner,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                error=error[:2000],
+                attempts=attempts,
+            ))
         await session.commit()
 
 
@@ -49,9 +183,14 @@ async def _process_pr_async(
     expected_head_sha: str,
     before_sha: str = None,
     after_sha: str = None,
+    cached_review: dict = None,
+    save_checkpoint=None,
+    assert_claim=None,
 ) -> dict:
     pr_state = await fetch_pr_state(owner, repo_name, pr_number)
     current_sha = pr_state["head_sha"]
+    if cached_review is not None and cached_review.get("head_sha") != current_sha:
+        cached_review = None
     if pr_state["state"] != "open":
         if expected_head_sha:
             await _release_closed_pr_claim(owner, repo_name, pr_number, expected_head_sha)
@@ -67,34 +206,79 @@ async def _process_pr_async(
         )
         return {"status": "obsolete", "pr_number": pr_number}
 
-    if before_sha and after_sha and after_sha == current_sha:
-        diff = await fetch_compare_diff(owner, repo_name, before_sha, after_sha)
+    if cached_review is not None and cached_review.get("complete", True):
+        feedback = cached_review["feedback"]
+        similar_count = cached_review["similar_count"]
+        hunks_scanned = cached_review["hunks_scanned"]
+        synthesis_calls = cached_review["synthesis_calls"]
+        partial = cached_review["partial"]
+        analysis_note = cached_review["analysis_note"]
+        external_failure = cached_review.get("external_failure", False) or "Groq synthesis did not complete" in analysis_note
+        review_summary = cached_review.get("review_summary", "")
+        outcome = cached_review.get("outcome")
     else:
-        diff = await fetch_pr_diff(owner, repo_name, pr_number)
+        resume = cached_review or {}
+        if before_sha and after_sha and after_sha == current_sha:
+            diff = await fetch_compare_diff(owner, repo_name, before_sha, after_sha)
+        else:
+            diff = await fetch_pr_diff(owner, repo_name, pr_number)
 
-    all_hunks = split_diff_into_hunks(diff)
-    hunks = all_hunks[:settings.max_pr_hunks]
-    truncated = len(all_hunks) > len(hunks)
-    if not hunks:
-        posted = await post_pr_comment(
-            owner, repo_name, pr_number, [], hunks_scanned=0, head_sha=current_sha
-        )
-        if not posted:
-            logger.error("pr_review_github_delivery_failed", pr_number=pr_number, repo=repo_name, head_sha=current_sha)
-            return {"status": "github_delivery_failed", "pr_number": pr_number, "hunks_scanned": 0}
-        return {"status": "complete", "pr_number": pr_number, "hunks_scanned": 0, "comment_posted": True}
+        all_hunks = split_diff_into_hunks(diff)
+        hunks = all_hunks[:settings.max_pr_hunks]
+        truncated = len(all_hunks) > len(hunks)
+        contexts = changed_context_by_file(hunks)
+        diff_summary = summarize_diff(diff)
+        review_summary = format_change_overview(diff_summary)
+        feedback = list(resume.get("feedback", []))
+        similar_count = 0
+        synthesis_calls = int(resume.get("synthesis_calls", 0))
+        completed_keys = set(resume.get("completed_group_keys", []))
+        legacy_completed_groups = int(resume.get("completed_groups", 0)) if not completed_keys and not resume.get("checkpoint_version") else 0
+        analysis_note = ""
+        partial = truncated or bool(resume.get("partial", False))
+        external_failure = False
 
-    feedback = []
-    similar_count = 0
-    synthesis_calls = 0
-    analysis_note = ""
-    partial = truncated
+        groups_to_review = []
+        for offset in range(0, len(hunks), BATCH_SIZE):
+            batch = hunks[offset:offset + BATCH_SIZE]
+            groups, _ = await retrieve_for_hunks(batch, owner, repo_name)
+            for group in groups:
+                group["_member_indices"] = [len(groups_to_review)]
+            groups_to_review.extend(groups)
+        groups_to_review = cluster_repeated_candidate_groups(groups_to_review)
 
-    for offset in range(0, len(hunks), BATCH_SIZE):
-        batch = hunks[offset:offset + BATCH_SIZE]
-        groups, _ = await retrieve_for_hunks(batch, owner, repo_name)
-        for group in groups:
-            similar_count += len(group["matches"])
+        all_evidence = {}
+        for group in groups_to_review:
+            for match in group["matches"]:
+                key = match.get("html_url") or (
+                    match.get("repo_owner"), match.get("repo_name"),
+                    match.get("path"), match.get("body"),
+                )
+                all_evidence[key] = match
+            group["_review_key"] = hashlib.sha256(
+                f"{group['filepath']}\0{group['hunk']}".encode()
+            ).hexdigest()
+        similar_count = len(all_evidence)
+
+        # Old in-flight checkpoints used a position count. Preserve that exact
+        # order for them; new checkpoints use stable keys and relevance ranking.
+        if not legacy_completed_groups:
+            groups_to_review.sort(key=lambda group: (
+                -max((historical_candidate_rank(
+                    group["hunk"], group["filepath"], match, owner, repo_name
+                ) for match in group["matches"]), default=0),
+                group["filepath"], group["hunk"],
+            ))
+
+        completed_keys = set(completed_keys)
+        for group_index, group in enumerate(groups_to_review):
+            group_key = group["_review_key"]
+            all_legacy_members_completed = (
+                legacy_completed_groups > 0
+                and all(index < legacy_completed_groups for index in group.get("_member_indices", []))
+            )
+            if all_legacy_members_completed or group_key in completed_keys:
+                continue
             if synthesis_calls >= settings.groq_max_calls_per_pr:
                 partial = True
                 analysis_note = (
@@ -104,12 +288,27 @@ async def _process_pr_async(
                 break
             synthesis_calls += 1
             try:
-                feedback.extend(await synthesize_feedback(group["hunk"], group["matches"]))
+                synthesized = await synthesize_feedback(
+                    group["hunk"], group["matches"],
+                    changed_context="\n\n".join(
+                        f"--- Changed file: {path} ---\n{contexts.get(path, '')}"
+                        for path in group.get("filepaths", [group["filepath"]])
+                    ),
+                )
+                synthesized, rejected = remove_context_contradicted_findings(synthesized, contexts)
+                if rejected:
+                    logger.info(
+                        "synthesis_claim_contradicted_by_changed_context",
+                        pr_number=pr_number,
+                        rejected_count=len(rejected),
+                    )
+                feedback = deduplicate_findings(feedback + synthesized)
             except GroqSynthesisUnavailable:
                 partial = True
+                external_failure = True
                 analysis_note = (
-                    "Groq synthesis did not complete after the configured bounded retries. "
-                    "This result is incomplete and does not mean that no issues exist."
+                    "Groq synthesis failed after its bounded retries. "
+                    "This review is incomplete; no no-findings conclusion was reached."
                 )
                 logger.warning(
                     "pr_synthesis_stopped_after_provider_failure",
@@ -117,14 +316,69 @@ async def _process_pr_async(
                     synthesis_calls=synthesis_calls,
                 )
                 break
-        if analysis_note:
-            break
 
-    if truncated and not analysis_note:
-        analysis_note = (
-            f"The diff exceeded the configured limit of {settings.max_pr_hunks} hunks; "
-            "remaining hunks were not scanned."
-        )
+            completed_keys.add(group_key)
+            if save_checkpoint is not None:
+                await save_checkpoint({
+                    "head_sha": current_sha,
+                    "feedback": feedback,
+                    "similar_count": similar_count,
+                    "hunks_scanned": len(hunks),
+                    "synthesis_calls": synthesis_calls,
+                    "completed_groups": len(completed_keys),
+                    "completed_group_keys": sorted(completed_keys),
+                    "checkpoint_version": 2,
+                    "review_summary": review_summary,
+                    "partial": partial,
+                    "analysis_note": analysis_note,
+                    "complete": False,
+                })
+
+        feedback = deduplicate_findings(feedback)
+        feedback, contradicted = remove_context_contradicted_findings(feedback, contexts)
+        if contradicted:
+            logger.info(
+                "resumed_claim_contradicted_by_changed_context",
+                pr_number=pr_number,
+                rejected_count=len(contradicted),
+            )
+
+        if truncated and not analysis_note:
+            analysis_note = (
+                f"The diff exceeded the configured limit of {settings.max_pr_hunks} hunks; "
+                "remaining hunks were not scanned."
+            )
+        hunks_scanned = len(hunks)
+
+        if external_failure:
+            outcome = "external_failure"
+        elif partial:
+            outcome = "partial_request_limit"
+        elif feedback:
+            outcome = "completed_with_findings"
+        elif similar_count:
+            outcome = "completed_no_actionable_findings"
+        else:
+            outcome = "general_analysis_only"
+
+        checkpoint = {
+            "head_sha": current_sha,
+            "feedback": feedback,
+            "similar_count": similar_count,
+            "hunks_scanned": hunks_scanned,
+            "synthesis_calls": synthesis_calls,
+            "partial": partial,
+            "analysis_note": analysis_note,
+            "completed_groups": len(completed_keys),
+            "completed_group_keys": sorted(completed_keys),
+            "checkpoint_version": 2,
+            "review_summary": review_summary,
+            "external_failure": external_failure,
+            "outcome": outcome,
+            "complete": True,
+        }
+        if save_checkpoint is not None:
+            await save_checkpoint(checkpoint)
 
     latest_pr_state = await fetch_pr_state(owner, repo_name, pr_number)
     latest_sha = latest_pr_state["head_sha"]
@@ -139,16 +393,34 @@ async def _process_pr_async(
         )
         return {"status": "obsolete", "pr_number": pr_number}
 
+    if assert_claim is not None:
+        await assert_claim()
+
+    if cached_review is not None and cached_review.get("complete", True):
+        if not outcome:
+            if external_failure:
+                outcome = "external_failure"
+            elif partial:
+                outcome = "partial_request_limit"
+            elif feedback:
+                outcome = "completed_with_findings"
+            elif similar_count:
+                outcome = "completed_no_actionable_findings"
+            else:
+                outcome = "general_analysis_only"
+
     posted = await post_pr_comment(
         owner,
         repo_name,
         pr_number,
         feedback,
         similar_count=similar_count,
-        hunks_scanned=len(hunks),
+        hunks_scanned=hunks_scanned,
         partial=partial,
         analysis_note=analysis_note,
         head_sha=current_sha,
+        outcome=outcome,
+        review_summary=review_summary,
     )
     if not posted:
         logger.error("pr_review_github_delivery_failed", pr_number=pr_number, repo=repo_name, head_sha=current_sha)
@@ -159,17 +431,19 @@ async def _process_pr_async(
         repo=repo_name,
         pr_number=pr_number,
         head_sha=current_sha,
-        hunks_scanned=len(hunks),
+        hunks_scanned=hunks_scanned,
         synthesis_calls=synthesis_calls,
         findings=len(feedback),
         partial=partial,
         comment_posted=True,
     )
     return {
-        "status": "partial" if partial else "complete",
+        "status": "external_failure" if external_failure else "partial" if partial else "complete",
+        "outcome": outcome,
+        "analysis_note": analysis_note,
         "pr_number": pr_number,
         "head_sha": current_sha,
-        "hunks_scanned": len(hunks),
+        "hunks_scanned": hunks_scanned,
         "synthesis_calls": synthesis_calls,
         "concerns_identified": len(feedback),
         "comment_posted": True,
@@ -186,7 +460,32 @@ def process_pr(
     before_sha: str = None,
     after_sha: str = None,
 ):
-    attempt = self.request.retries + 1
+    task_id = self.request.id or str(uuid.uuid4())
+    delivery_info = self.request.delivery_info or {}
+    redelivered = bool(delivery_info.get("redelivered"))
+    lease_owner = str(uuid.uuid4())
+    if not expected_head_sha:
+        try:
+            expected_head_sha = asyncio.run(fetch_pr_state(owner, repo_name, pr_number))["head_sha"]
+        except Exception as exc:
+            logger.error("review_head_lookup_failed", pr_number=pr_number, error_type=type(exc).__name__)
+            raise self.retry(exc=exc, countdown=30)
+
+    claim = asyncio.run(_acquire_review_claim(
+        owner, repo_name, pr_number, expected_head_sha,
+        task_id, lease_owner, redelivered,
+    ))
+    if claim is None:
+        logger.info(
+            "review_claim_not_acquired",
+            pr_number=pr_number,
+            repo=repo_name,
+            task_id=task_id,
+            redelivered=redelivered,
+        )
+        return {"status": "already_claimed", "pr_number": pr_number}
+
+    attempt = claim["attempts"]
     logger.info(
         "process_pr_started",
         pr_number=pr_number,
@@ -194,25 +493,189 @@ def process_pr(
         attempt=attempt,
         expected_head_sha=expected_head_sha,
         delta_only=bool(before_sha and after_sha),
+        recovery_attempt=attempt,
+        redelivered=redelivered,
     )
+
+    async def save_checkpoint(payload):
+        await _save_review_checkpoint(
+            owner, repo_name, pr_number, expected_head_sha, lease_owner, payload
+        )
+
+    async def assert_claim():
+        await _assert_review_claim(
+            owner, repo_name, pr_number, expected_head_sha, lease_owner
+        )
+
     try:
-        return asyncio.run(_process_pr_async(
+        result = asyncio.run(_process_pr_async(
             pr_number,
             repo_name,
             owner,
             expected_head_sha=expected_head_sha,
             before_sha=before_sha,
             after_sha=after_sha,
+            cached_review=claim["review_payload"],
+            save_checkpoint=save_checkpoint,
+            assert_claim=assert_claim,
         ))
+        if result["status"] == "github_delivery_failed":
+            raise RuntimeError("GitHub comment delivery failed after bounded retries")
+        if result["status"] == "complete" or result["status"] == "partial":
+            durable_status = {
+                "completed_with_findings": "completed_with_findings",
+                "completed_no_actionable_findings": "completed_no_findings",
+                "general_analysis_only": "general_analysis_only",
+                "partial_request_limit": "partial_request_limit",
+            }.get(result["outcome"], "completed_with_findings")
+            finished = asyncio.run(_finish_review_claim(
+                owner, repo_name, pr_number, expected_head_sha,
+                lease_owner, durable_status,
+            ))
+            if not finished:
+                raise RuntimeError("review claim was lost after GitHub comment delivery")
+        elif result["status"] == "external_failure":
+            asyncio.run(_record_claim_failure(
+                owner, repo_name, pr_number, expected_head_sha, lease_owner,
+                result.get("analysis_note", "external service failure"), attempt,
+            ))
+            logger.error(
+                "review_visible_but_marked_failed",
+                repo=repo_name,
+                pr_number=pr_number,
+                outcome=result.get("outcome"),
+            )
+        elif result["status"] == "closed":
+            asyncio.run(_finish_review_claim(
+                owner, repo_name, pr_number, expected_head_sha,
+                lease_owner, "skipped_closed",
+            ))
+        elif result["status"] == "obsolete":
+            asyncio.run(_finish_review_claim(
+                owner, repo_name, pr_number, expected_head_sha,
+                lease_owner, "superseded",
+            ))
+        return result
     except SoftTimeLimitExceeded as exc:
         logger.error("process_pr_soft_time_limit_reached", pr_number=pr_number, attempt=attempt)
-        asyncio.run(_record_failed_pr(owner, repo_name, pr_number, "soft time limit exceeded", attempt))
-        return {"status": "failed", "pr_number": pr_number, "reason": "soft_time_limit"}
+        error = "soft time limit exceeded"
     except Exception as exc:
         logger.error("process_pr_failed", pr_number=pr_number, error=str(exc), attempt=attempt)
-        if self.request.retries >= self.max_retries:
-            asyncio.run(_record_failed_pr(owner, repo_name, pr_number, str(exc), attempt))
-            logger.error("process_pr_dead_lettered", pr_number=pr_number, repo=repo_name, attempts=attempt)
-            raise
+        error = str(exc)
+
+    if self.request.retries < self.max_retries and attempt < settings.review_max_attempts:
+        asyncio.run(_release_claim_for_retry(
+            owner, repo_name, pr_number, expected_head_sha, lease_owner
+        ))
         countdown = min(30 * (2 ** self.request.retries), 180)
-        raise self.retry(exc=exc, countdown=countdown)
+        raise self.retry(exc=RuntimeError(error), countdown=countdown)
+
+    asyncio.run(_record_claim_failure(
+        owner, repo_name, pr_number, expected_head_sha, lease_owner, error, attempt
+    ))
+    logger.error("process_pr_dead_lettered", pr_number=pr_number, repo=repo_name, attempts=attempt)
+    raise RuntimeError(error)
+
+
+async def _reconcile_review_jobs_async() -> int:
+    now = datetime.utcnow()
+    expiry_cutoff = now - timedelta(seconds=settings.review_task_expires_seconds + 60)
+    queued = []
+    async with AsyncSessionLocal() as session:
+        expired = (await session.execute(
+            select(ProcessedPR).where(
+                ProcessedPR.status == "processing",
+                ProcessedPR.lease_expires_at <= now,
+            ).limit(100).with_for_update(skip_locked=True)
+        )).scalars().all()
+        for claim in expired:
+            if claim.attempts >= settings.review_max_attempts:
+                claim.status = "failed"
+                claim.last_error = "review claim lease expired after maximum recovery attempts"
+                claim.task_id = None
+                claim.lease_owner = None
+                claim.lease_expires_at = None
+                session.add(FailedPR(
+                    repo_owner=claim.repo_owner,
+                    repo_name=claim.repo_name,
+                    pr_number=claim.pr_number,
+                    error=claim.last_error,
+                    attempts=claim.attempts,
+                ))
+                logger.error(
+                    "review_recovery_exhausted",
+                    repo=claim.repo_name,
+                    pr_number=claim.pr_number,
+                    attempts=claim.attempts,
+                )
+            else:
+                recovery_delay = min(30 * (2 ** max(0, claim.attempts - 1)), 1800)
+                recovery_delay = random.uniform(recovery_delay * 0.8, recovery_delay * 1.2)
+                claim.status = "abandoned"
+                claim.task_id = None
+                claim.lease_owner = None
+                claim.lease_expires_at = None
+                claim.last_error = "worker claim lease expired; review will be recovered"
+                claim.dispatched_at = now - timedelta(
+                    seconds=settings.review_task_expires_seconds + 60
+                ) + timedelta(seconds=recovery_delay)
+
+        await session.flush()
+        due = (await session.execute(
+            select(ProcessedPR).where(
+                ProcessedPR.status.in_(("queued", "expired", "abandoned")),
+                or_(ProcessedPR.dispatched_at.is_(None), ProcessedPR.dispatched_at <= expiry_cutoff),
+            ).order_by(ProcessedPR.dispatched_at.asc().nullsfirst()).limit(100)
+            .with_for_update(skip_locked=True)
+        )).scalars().all()
+        for claim in due:
+            if (
+                claim.attempts >= settings.review_max_attempts
+                or claim.dispatch_attempts >= settings.review_max_attempts
+            ):
+                claim.status = "failed"
+                claim.last_error = "review expired from queue after maximum recovery attempts"
+                session.add(FailedPR(
+                    repo_owner=claim.repo_owner,
+                    repo_name=claim.repo_name,
+                    pr_number=claim.pr_number,
+                    error=claim.last_error,
+                    attempts=claim.attempts,
+                ))
+                continue
+            had_dispatch = claim.dispatched_at is not None
+            claim.dispatched_at = now
+            claim.dispatch_attempts += 1
+            if claim.status == "queued" and had_dispatch:
+                claim.status = "expired"
+                claim.last_error = "queued Celery message expired before a worker claimed it"
+            queued.append((claim.pr_number, claim.repo_name, claim.repo_owner, claim.head_sha))
+        await session.commit()
+
+    for pr_number, repo_name, owner, head_sha in queued:
+        try:
+            process_pr.apply_async(
+                args=(pr_number, repo_name, owner),
+                kwargs={"expected_head_sha": head_sha},
+                expires=settings.review_task_expires_seconds,
+            )
+            logger.warning(
+                "abandoned_review_requeued",
+                owner=owner,
+                repo=repo_name,
+                pr_number=pr_number,
+                head_sha=head_sha,
+            )
+        except Exception as exc:
+            logger.error(
+                "review_reconciliation_publish_failed",
+                repo=repo_name,
+                pr_number=pr_number,
+                error_type=type(exc).__name__,
+            )
+    return len(queued)
+
+
+def reconcile_review_jobs() -> int:
+    """Requeue expired/abandoned DB claims without scanning or clearing Redis."""
+    return asyncio.run(_reconcile_review_jobs_async())

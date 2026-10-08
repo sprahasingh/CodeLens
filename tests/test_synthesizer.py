@@ -20,7 +20,11 @@ async def test_synthesize_feedback_drops_concerns_with_empty_concern_text(monkey
             "concerns": [
                 {"concern": "", "source_indices": [0]},
                 {"concern": "   ", "source_indices": [0]},
-                {"concern": "Real issue found", "source_indices": [0]},
+                {
+                    "concern": "Real issue found",
+                    "evidence": "The cited past review describes this failure mode.",
+                    "source_indices": [0],
+                },
             ]
         }
 
@@ -36,7 +40,11 @@ async def test_synthesize_feedback_rejects_negative_and_out_of_range_source_indi
     async def fake_call_groq_json(prompt, model=None):
         return {
             "concerns": [
-                {"concern": "Uses a negative index", "source_indices": [-1, 0, 99]},
+                {
+                    "concern": "Uses a negative index",
+                    "evidence": "A past review raised this same concern.",
+                    "source_indices": [-1, 0, 99],
+                },
             ]
         }
 

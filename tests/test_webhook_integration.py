@@ -76,7 +76,7 @@ def test_duplicate_pr_webhook_queues_only_once(monkeypatch):
     claims = iter([True, False])
     queued = []
 
-    async def fake_claim(*args):
+    async def fake_claim(*args, **kwargs):
         return next(claims)
 
     monkeypatch.setattr(webhook, "claim_pr_processing", fake_claim)

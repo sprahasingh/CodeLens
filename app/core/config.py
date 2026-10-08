@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     voyage_api_key: str
     webhook_secret: str = ""
     groq_api_key: str
-    groq_max_concurrency: int = Field(default=1, ge=1, le=4)
+    groq_max_concurrency: int = Field(default=1, ge=1, le=1)
     groq_max_retries: int = Field(default=2, ge=0, le=5)
     groq_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     groq_retry_base_seconds: float = Field(default=1.0, ge=0, le=30)
@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     max_pr_hunks: int = Field(default=50, ge=1, le=500)
     review_task_expires_seconds: int = Field(default=1800, ge=60, le=86400)
     review_task_max_retries: int = Field(default=2, ge=0, le=5)
+    review_claim_lease_seconds: int = Field(default=1200, ge=1020, le=86400)
+    review_max_attempts: int = Field(default=5, ge=1, le=10)
+    review_reconcile_interval_seconds: int = Field(default=60, ge=15, le=600)
     github_comment_max_retries: int = Field(default=2, ge=0, le=5)
     github_comment_retry_base_seconds: float = Field(default=1.0, ge=0, le=30)
     github_comment_retry_max_seconds: float = Field(default=20.0, ge=1, le=120)

@@ -3,7 +3,8 @@ import hashlib
 import structlog
 import httpx
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
-from sqlalchemy import delete
+from datetime import datetime
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 from app.tasks.pr_tasks import process_pr
 from app.core.config import settings
@@ -28,36 +29,67 @@ def verify_webhook_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-async def claim_pr_processing(owner: str, repo_name: str, pr_number: int, head_sha: str) -> bool:
+async def claim_pr_processing(
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    allow_reclaim: bool = False,
+) -> bool:
     """Atomically claim (repo, pr_number, head_sha) for processing.
 
-    Returns True the first time this exact PR at this exact commit is seen,
-    False if it was already claimed (duplicate webhook delivery, or a retry
-    of the same delivery) so the caller can skip re-queuing/re-posting.
+    Closed-before-review and superseded claims may be reclaimed atomically on
+    reopen/synchronize. All other existing states suppress duplicate delivery.
     """
     stmt = insert(ProcessedPR).values(
         repo_owner=owner,
         repo_name=repo_name,
         pr_number=pr_number,
-        head_sha=head_sha
+        head_sha=head_sha,
+        status="queued",
+        attempts=0,
+        dispatch_attempts=1,
+        dispatched_at=datetime.utcnow(),
     ).on_conflict_do_nothing(
         index_elements=["repo_owner", "repo_name", "pr_number", "head_sha"]
     )
     async with AsyncSessionLocal() as session:
         result = await session.execute(stmt)
+        claimed = result.rowcount > 0
+        if not claimed and allow_reclaim:
+            reopened = await session.execute(update(ProcessedPR).where(
+                ProcessedPR.repo_owner == owner,
+                ProcessedPR.repo_name == repo_name,
+                ProcessedPR.pr_number == pr_number,
+                ProcessedPR.head_sha == head_sha,
+                ProcessedPR.status.in_(("skipped_closed", "superseded")),
+            ).values(
+                status="queued",
+                task_id=None,
+                lease_owner=None,
+                lease_expires_at=None,
+                attempts=0,
+                dispatch_attempts=1,
+                review_payload=None,
+                last_error=None,
+                dispatched_at=datetime.utcnow(),
+            ))
+            claimed = reopened.rowcount > 0
         await session.commit()
-    return result.rowcount > 0
+    return claimed
 
 
 async def release_pr_claim(owner: str, repo_name: str, pr_number: int, head_sha: str) -> None:
-    """Release a claim only when publishing the corresponding task failed."""
+    """Make an unstarted claim immediately eligible for reconciliation."""
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(ProcessedPR).where(
+        await session.execute(update(ProcessedPR).where(
             ProcessedPR.repo_owner == owner,
             ProcessedPR.repo_name == repo_name,
             ProcessedPR.pr_number == pr_number,
             ProcessedPR.head_sha == head_sha,
-        ))
+            ProcessedPR.status == "queued",
+            ProcessedPR.lease_owner.is_(None),
+        ).values(dispatched_at=None))
         await session.commit()
 
 
@@ -86,7 +118,10 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
             owner = payload["repository"]["owner"]["login"]
             head_sha = payload["pull_request"]["head"]["sha"]
 
-            claimed = await claim_pr_processing(owner, repo_name, pr_number, head_sha)
+            claimed = await claim_pr_processing(
+                owner, repo_name, pr_number, head_sha,
+                allow_reclaim=action in ("reopened", "synchronize"),
+            )
             if not claimed:
                 logger.info(
                     "duplicate_webhook_skipped",

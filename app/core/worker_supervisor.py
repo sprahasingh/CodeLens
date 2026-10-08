@@ -85,6 +85,11 @@ def _worker_run_was_stable(started_at: float) -> bool:
     return time.monotonic() - started_at >= settings.worker_restart_stability_seconds
 
 
+def _reconcile_due_reviews() -> int:
+    from app.tasks.pr_tasks import reconcile_review_jobs
+    return reconcile_review_jobs()
+
+
 def _stop_child(child: subprocess.Popen, grace_seconds: int = 20) -> None:
     if child.poll() is not None:
         return
@@ -119,6 +124,7 @@ def run() -> int:
     restart_delay = 5
     disk_warning_active = False
     consecutive_exits = 0
+    last_reconcile = 0.0
 
     while not stopping:
         child_started_at = time.monotonic()
@@ -137,6 +143,16 @@ def run() -> int:
                 # Upstash or network outage; restarting cannot fix unavailable Redis.
                 missed_pings = 0
                 continue
+
+            now = time.monotonic()
+            if now - last_reconcile >= settings.review_reconcile_interval_seconds:
+                try:
+                    recovered = _reconcile_due_reviews()
+                    if recovered:
+                        logger.warning("review_reconciliation_dispatched", count=recovered)
+                except Exception as exc:
+                    logger.error("review_reconciliation_failed", error_type=type(exc).__name__)
+                last_reconcile = now
 
             if _worker_replies():
                 missed_pings = 0
