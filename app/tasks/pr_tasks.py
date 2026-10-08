@@ -5,6 +5,7 @@ import uuid
 import hashlib
 from datetime import datetime, timedelta
 from billiard.exceptions import SoftTimeLimitExceeded
+from celery.exceptions import Retry
 from sqlalchemy import and_, or_, select, update
 
 from app.core.celery_app import celery_app
@@ -16,6 +17,7 @@ from app.services.github_client import fetch_pr_diff, fetch_compare_diff, fetch_
 from app.services.github_comment import post_pr_comment
 from app.services.retrieval import retrieve_for_hunks, split_diff_into_hunks
 from app.services.synthesizer import GroqSynthesisUnavailable, synthesize_feedback
+from app.services.llm_client import DEFAULT_MODEL, GroqRateLimitedError, GroqPermanentError
 from app.services.review_quality import (
     changed_context_by_file,
     cluster_repeated_candidate_groups,
@@ -186,6 +188,7 @@ async def _process_pr_async(
     cached_review: dict = None,
     save_checkpoint=None,
     assert_claim=None,
+    claim_attempt: int = None,
 ) -> dict:
     pr_state = await fetch_pr_state(owner, repo_name, pr_number)
     current_sha = pr_state["head_sha"]
@@ -218,57 +221,78 @@ async def _process_pr_async(
         outcome = cached_review.get("outcome")
     else:
         resume = cached_review or {}
-        if before_sha and after_sha and after_sha == current_sha:
-            diff = await fetch_compare_diff(owner, repo_name, before_sha, after_sha)
-        else:
-            diff = await fetch_pr_diff(owner, repo_name, pr_number)
-
-        all_hunks = split_diff_into_hunks(diff)
-        hunks = all_hunks[:settings.max_pr_hunks]
-        truncated = len(all_hunks) > len(hunks)
-        contexts = changed_context_by_file(hunks)
-        diff_summary = summarize_diff(diff)
-        review_summary = format_change_overview(diff_summary)
         feedback = list(resume.get("feedback", []))
-        similar_count = 0
+        similar_count = int(resume.get("similar_count", 0))
         synthesis_calls = int(resume.get("synthesis_calls", 0))
         completed_keys = set(resume.get("completed_group_keys", []))
         legacy_completed_groups = int(resume.get("completed_groups", 0)) if not completed_keys and not resume.get("checkpoint_version") else 0
-        analysis_note = ""
-        partial = truncated or bool(resume.get("partial", False))
+        analysis_note = resume.get("analysis_note", "")
+        partial = bool(resume.get("partial", False))
         external_failure = False
-
-        groups_to_review = []
-        for offset in range(0, len(hunks), BATCH_SIZE):
-            batch = hunks[offset:offset + BATCH_SIZE]
-            groups, _ = await retrieve_for_hunks(batch, owner, repo_name)
-            for group in groups:
-                group["_member_indices"] = [len(groups_to_review)]
-            groups_to_review.extend(groups)
-        groups_to_review = cluster_repeated_candidate_groups(groups_to_review)
-
-        all_evidence = {}
-        for group in groups_to_review:
-            for match in group["matches"]:
-                key = match.get("html_url") or (
-                    match.get("repo_owner"), match.get("repo_name"),
-                    match.get("path"), match.get("body"),
+        if "synthesis_plan" in resume:
+            groups_to_review = resume["synthesis_plan"]
+            hunks_scanned = int(resume.get("hunks_scanned", 0))
+            review_summary = resume.get("review_summary", "")
+            contexts = resume.get("changed_contexts", {})
+            truncated = bool(resume.get("truncated", False))
+            logger.info("synthesis_checkpoint_resumed", pr_number=pr_number,
+                        completed_groups=len(completed_keys), total_groups=len(groups_to_review))
+        else:
+            if before_sha and after_sha and after_sha == current_sha:
+                diff = await fetch_compare_diff(owner, repo_name, before_sha, after_sha)
+            else:
+                diff = await fetch_pr_diff(owner, repo_name, pr_number)
+            all_hunks = split_diff_into_hunks(diff)
+            hunks = all_hunks[:settings.max_pr_hunks]
+            truncated = len(all_hunks) > len(hunks)
+            hunks_scanned = len(hunks)
+            contexts = changed_context_by_file(hunks)
+            review_summary = format_change_overview(summarize_diff(diff))
+            groups_to_review = []
+            for offset in range(0, len(hunks), BATCH_SIZE):
+                groups, _ = await retrieve_for_hunks(hunks[offset:offset + BATCH_SIZE], owner, repo_name)
+                for group in groups:
+                    group["_member_indices"] = [len(groups_to_review)]
+                groups_to_review.extend(groups)
+            groups_to_review = cluster_repeated_candidate_groups(groups_to_review)
+            all_evidence = {}
+            for group in groups_to_review:
+                for match in group["matches"]:
+                    key = match.get("html_url") or (match.get("repo_owner"), match.get("repo_name"), match.get("path"), match.get("body"))
+                    all_evidence[key] = match
+                group["_review_key"] = hashlib.sha256(f"{group['filepath']}\0{group['hunk']}".encode()).hexdigest()
+            similar_count = len(all_evidence)
+            if not legacy_completed_groups:
+                groups_to_review.sort(key=lambda group: (
+                    -max((historical_candidate_rank(group["hunk"], group["filepath"], match, owner, repo_name)
+                          for match in group["matches"]), default=0), group["filepath"], group["hunk"],
+                ))
+            for group in groups_to_review:
+                group["changed_context"] = "\n\n".join(
+                    f"--- Changed file: {path} ---\n{contexts.get(path, '')}"
+                    for path in group.get("filepaths", [group["filepath"]])
                 )
-                all_evidence[key] = match
-            group["_review_key"] = hashlib.sha256(
-                f"{group['filepath']}\0{group['hunk']}".encode()
-            ).hexdigest()
-        similar_count = len(all_evidence)
-
-        # Old in-flight checkpoints used a position count. Preserve that exact
-        # order for them; new checkpoints use stable keys and relevance ranking.
-        if not legacy_completed_groups:
-            groups_to_review.sort(key=lambda group: (
-                -max((historical_candidate_rank(
-                    group["hunk"], group["filepath"], match, owner, repo_name
-                ) for match in group["matches"]), default=0),
-                group["filepath"], group["hunk"],
-            ))
+            checkpoint_plan = [
+                {key: value for key, value in group.items() if key not in {"_symbols", "_evidence"}}
+                for group in groups_to_review
+            ]
+            if save_checkpoint is not None:
+                await save_checkpoint({
+                    "head_sha": current_sha, "feedback": feedback, "similar_count": similar_count,
+                    "hunks_scanned": hunks_scanned, "synthesis_calls": synthesis_calls,
+                    "completed_groups": len(completed_keys), "completed_group_keys": sorted(completed_keys),
+                    "checkpoint_version": 3, "review_summary": review_summary, "partial": partial,
+                    "analysis_note": analysis_note, "complete": False,
+                    "synthesis_plan": checkpoint_plan, "changed_contexts": contexts,
+                    "truncated": truncated,
+                    "deferred_started_at": resume.get("deferred_started_at"),
+                    "deferred_attempts": resume.get("deferred_attempts", 0),
+                })
+        checkpoint_plan = [
+            {key: value for key, value in group.items() if key not in {"_symbols", "_evidence"}}
+            for group in groups_to_review
+        ]
+        partial = partial or truncated
 
         completed_keys = set(completed_keys)
         for group_index, group in enumerate(groups_to_review):
@@ -290,10 +314,9 @@ async def _process_pr_async(
             try:
                 synthesized = await synthesize_feedback(
                     group["hunk"], group["matches"],
-                    changed_context="\n\n".join(
-                        f"--- Changed file: {path} ---\n{contexts.get(path, '')}"
-                        for path in group.get("filepaths", [group["filepath"]])
-                    ),
+                    changed_context=group.get("changed_context", ""),
+                    request_context={"pr_number": pr_number, "repo": repo_name,
+                                     "synthesis_group_id": group_key},
                 )
                 synthesized, rejected = remove_context_contradicted_findings(synthesized, contexts)
                 if rejected:
@@ -303,7 +326,54 @@ async def _process_pr_async(
                         rejected_count=len(rejected),
                     )
                 feedback = deduplicate_findings(feedback + synthesized)
-            except GroqSynthesisUnavailable:
+            except GroqRateLimitedError as exc:
+                deferred_attempts = int(resume.get("deferred_attempts", 0))
+                started_at = resume.get("deferred_started_at")
+                if started_at:
+                    try:
+                        started = datetime.fromisoformat(started_at)
+                    except (TypeError, ValueError):
+                        started = datetime.utcnow()
+                else:
+                    started = datetime.utcnow()
+                delay = max(exc.retry_after_seconds, 0.0) + random.uniform(0.0, min(3.0, max(0.25, exc.retry_after_seconds * 0.05)))
+                elapsed = (datetime.utcnow() - started).total_seconds()
+                can_defer = (
+                    deferred_attempts < settings.groq_deferred_max_attempts
+                    and elapsed + delay <= settings.groq_deferred_max_elapsed_seconds
+                    and (claim_attempt is None or claim_attempt < settings.review_max_attempts)
+                )
+                if can_defer:
+                    next_attempt = deferred_attempts + 1
+                    checkpoint = {
+                        "head_sha": current_sha, "feedback": deduplicate_findings(feedback),
+                        "similar_count": similar_count, "hunks_scanned": hunks_scanned,
+                        "synthesis_calls": synthesis_calls - 1,
+                        "completed_groups": len(completed_keys), "completed_group_keys": sorted(completed_keys),
+                        "checkpoint_version": 3, "review_summary": review_summary,
+                        "partial": partial, "analysis_note": "", "complete": False,
+                        "synthesis_plan": checkpoint_plan, "changed_contexts": contexts,
+                        "truncated": truncated, "deferred_started_at": started.isoformat(),
+                        "deferred_attempts": next_attempt,
+                    }
+                    if save_checkpoint is not None:
+                        await save_checkpoint(checkpoint)
+                    logger.warning("groq_synthesis_deferred", pr_number=pr_number, repo=repo_name,
+                                   synthesis_group_id=group_key, model=DEFAULT_MODEL,
+                                   retry_after_seconds=exc.retry_after_seconds,
+                                   scheduled_delay_seconds=round(delay, 2), retry_count=next_attempt,
+                                   cumulative_retry_seconds=round(elapsed + delay, 2))
+                    return {"status": "deferred", "pr_number": pr_number,
+                            "countdown": max(1, int(delay + 0.999)), "retry_count": next_attempt}
+                partial = True
+                external_failure = True
+                analysis_note = "Groq rate-limit recovery budget was exhausted. This review is incomplete; no no-findings conclusion was reached."
+                logger.error("groq_deferred_recovery_exhausted", pr_number=pr_number,
+                             repo=repo_name, synthesis_group_id=group_key,
+                             retry_after_seconds=exc.retry_after_seconds,
+                             retry_count=deferred_attempts, cumulative_retry_seconds=round(elapsed, 2))
+                break
+            except (GroqSynthesisUnavailable, GroqPermanentError):
                 partial = True
                 external_failure = True
                 analysis_note = (
@@ -313,6 +383,9 @@ async def _process_pr_async(
                 logger.warning(
                     "pr_synthesis_stopped_after_provider_failure",
                     pr_number=pr_number,
+                    repo=repo_name,
+                    synthesis_group_id=group_key,
+                    model=DEFAULT_MODEL,
                     synthesis_calls=synthesis_calls,
                 )
                 break
@@ -323,15 +396,20 @@ async def _process_pr_async(
                     "head_sha": current_sha,
                     "feedback": feedback,
                     "similar_count": similar_count,
-                    "hunks_scanned": len(hunks),
+                    "hunks_scanned": hunks_scanned,
                     "synthesis_calls": synthesis_calls,
                     "completed_groups": len(completed_keys),
                     "completed_group_keys": sorted(completed_keys),
-                    "checkpoint_version": 2,
+                    "checkpoint_version": 3,
                     "review_summary": review_summary,
                     "partial": partial,
                     "analysis_note": analysis_note,
                     "complete": False,
+                    "synthesis_plan": checkpoint_plan,
+                    "changed_contexts": contexts,
+                    "truncated": truncated,
+                    "deferred_started_at": resume.get("deferred_started_at"),
+                    "deferred_attempts": resume.get("deferred_attempts", 0),
                 })
 
         feedback = deduplicate_findings(feedback)
@@ -348,8 +426,6 @@ async def _process_pr_async(
                 f"The diff exceeded the configured limit of {settings.max_pr_hunks} hunks; "
                 "remaining hunks were not scanned."
             )
-        hunks_scanned = len(hunks)
-
         if external_failure:
             outcome = "external_failure"
         elif partial:
@@ -371,11 +447,24 @@ async def _process_pr_async(
             "analysis_note": analysis_note,
             "completed_groups": len(completed_keys),
             "completed_group_keys": sorted(completed_keys),
-            "checkpoint_version": 2,
+            "checkpoint_version": 3,
             "review_summary": review_summary,
             "external_failure": external_failure,
             "outcome": outcome,
-            "complete": True,
+            "complete": (
+                not external_failure
+                and not partial
+                and set(completed_keys).issuperset(group.get("_review_key") for group in groups_to_review)
+            ),
+            "synthesis_complete": (
+                not external_failure
+                and set(completed_keys).issuperset(group.get("_review_key") for group in groups_to_review)
+            ),
+            "synthesis_plan": checkpoint_plan,
+            "changed_contexts": contexts,
+            "truncated": truncated,
+            "deferred_started_at": resume.get("deferred_started_at"),
+            "deferred_attempts": resume.get("deferred_attempts", 0),
         }
         if save_checkpoint is not None:
             await save_checkpoint(checkpoint)
@@ -435,6 +524,7 @@ async def _process_pr_async(
         synthesis_calls=synthesis_calls,
         findings=len(feedback),
         partial=partial,
+        outcome=outcome,
         comment_posted=True,
     )
     return {
@@ -450,7 +540,10 @@ async def _process_pr_async(
     }
 
 
-@celery_app.task(name="process_pr", bind=True, max_retries=settings.review_task_max_retries)
+@celery_app.task(
+    name="process_pr", bind=True,
+    max_retries=max(settings.review_task_max_retries, settings.groq_deferred_max_attempts),
+)
 def process_pr(
     self,
     pr_number: int,
@@ -518,9 +611,23 @@ def process_pr(
             cached_review=claim["review_payload"],
             save_checkpoint=save_checkpoint,
             assert_claim=assert_claim,
+            claim_attempt=attempt,
         ))
         if result["status"] == "github_delivery_failed":
             raise RuntimeError("GitHub comment delivery failed after bounded retries")
+        if result["status"] == "deferred":
+            if attempt >= settings.review_max_attempts:
+                raise RuntimeError("review claim recovery budget exhausted before Groq retry")
+            asyncio.run(_release_claim_for_retry(
+                owner, repo_name, pr_number, expected_head_sha, lease_owner
+            ))
+            logger.info("pr_task_deferred", pr_number=pr_number, repo=repo_name,
+                        retry_count=result["retry_count"], countdown=result["countdown"])
+            raise self.retry(
+                countdown=result["countdown"],
+                max_retries=settings.groq_deferred_max_attempts,
+                expires=settings.review_task_expires_seconds,
+            )
         if result["status"] == "complete" or result["status"] == "partial":
             durable_status = {
                 "completed_with_findings": "completed_with_findings",
@@ -556,6 +663,8 @@ def process_pr(
                 lease_owner, "superseded",
             ))
         return result
+    except Retry:
+        raise
     except SoftTimeLimitExceeded as exc:
         logger.error("process_pr_soft_time_limit_reached", pr_number=pr_number, attempt=attempt)
         error = "soft time limit exceeded"

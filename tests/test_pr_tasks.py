@@ -2,6 +2,7 @@ import pytest
 from app.core.config import settings
 
 import app.tasks.pr_tasks as pr_tasks
+from app.services.llm_client import GroqRateLimitedError
 
 
 @pytest.mark.asyncio
@@ -274,6 +275,156 @@ async def test_groq_request_limit_posts_partial_outcome_and_stops_synthesis(monk
     assert len(synth_calls) == 1
     assert posted[0]["partial"] is True
     assert "request limit" in posted[0]["analysis_note"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_checkpoint_resumes_exact_group_without_retrieval_or_repeat(monkeypatch):
+    calls = {"retrieve": 0, "synthesized": [], "posted": 0}
+    checkpoints = []
+
+    async def current_head(*_args):
+        return {"head_sha": "head", "state": "open"}
+
+    async def diff(*_args):
+        return ("+++ b/a.py\n@@ -1,1 +1,2 @@\n old\n+first changed line with context\n"
+                "+++ b/b.py\n@@ -1,1 +1,2 @@\n old\n+second changed line with context\n")
+
+    async def retrieve(hunks, *_args):
+        calls["retrieve"] += 1
+        return ([{"hunk": hunk, "filepath": path,
+                 "matches": [{"similarity": .8, "path": "old.py", "body": path}]}
+                for path, hunk in hunks], len(hunks))
+
+    async def synthesize(hunk, _matches, **_kwargs):
+        calls["synthesized"].append(hunk)
+        if len(calls["synthesized"]) == 2:
+            raise GroqRateLimitedError(32)
+        return []
+
+    async def save(payload):
+        checkpoints.append(payload)
+
+    async def post(*_args, **_kwargs):
+        calls["posted"] += 1
+        return True
+
+    monkeypatch.setattr(pr_tasks, "fetch_pr_state", current_head)
+    monkeypatch.setattr(pr_tasks, "fetch_pr_diff", diff)
+    monkeypatch.setattr(pr_tasks, "retrieve_for_hunks", retrieve)
+    monkeypatch.setattr(pr_tasks, "synthesize_feedback", synthesize)
+    monkeypatch.setattr(pr_tasks, "post_pr_comment", post)
+    first = await pr_tasks._process_pr_async(1, "repo", "owner", "head", save_checkpoint=save)
+
+    assert first["status"] == "deferred"
+    assert first["countdown"] >= 32
+    assert calls["posted"] == 0
+    checkpoint = checkpoints[-1]
+    assert checkpoint["complete"] is False
+    assert len(checkpoint["completed_group_keys"]) == 1
+    assert len(checkpoint["synthesis_plan"]) == 2
+
+    # A fresh invocation models recovery after worker process restart.
+    async def should_not_fetch(*_args):
+        raise AssertionError("resume must use the persisted plan")
+    monkeypatch.setattr(pr_tasks, "fetch_pr_diff", should_not_fetch)
+    result = await pr_tasks._process_pr_async(
+        1, "repo", "owner", "head", cached_review=checkpoint, save_checkpoint=save
+    )
+    assert result["status"] == "complete"
+    assert calls["retrieve"] == 1
+    assert len(calls["synthesized"]) == 3  # first group, failed group, resumed failed group
+    assert calls["posted"] == 1
+    assert checkpoints[-1]["complete"] is True
+
+
+def test_deferred_task_uses_countdown_and_releases_claim(monkeypatch):
+    async def acquire(*_args):
+        return {"attempts": 1, "review_payload": None}
+
+    async def release(*_args):
+        released.append(True)
+
+    async def deferred(*_args, **_kwargs):
+        return {"status": "deferred", "countdown": 45, "retry_count": 1}
+
+    released = []
+    monkeypatch.setattr(pr_tasks, "_acquire_review_claim", acquire)
+    monkeypatch.setattr(pr_tasks, "_release_claim_for_retry", release)
+    monkeypatch.setattr(pr_tasks, "_process_pr_async", deferred)
+    retry_args = []
+
+    class RetrySentinel(pr_tasks.Retry):
+        pass
+
+    def retry(**kwargs):
+        retry_args.append(kwargs)
+        raise RetrySentinel
+
+    monkeypatch.setattr(pr_tasks.process_pr, "retry", retry)
+    pr_tasks.process_pr.push_request(retries=0)
+    try:
+        with pytest.raises(RetrySentinel):
+            pr_tasks.process_pr.run(1, "repo", "owner", expected_head_sha="head")
+    finally:
+        pr_tasks.process_pr.pop_request()
+    assert released == [True]
+    assert retry_args[0]["countdown"] == 45
+    assert retry_args[0]["max_retries"] == settings.groq_deferred_max_attempts
+    assert retry_args[0]["expires"] == settings.review_task_expires_seconds
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_recovery_exhaustion_stays_incomplete_and_posts_explicit_status(monkeypatch):
+    async def current_head(*_args):
+        return {"head_sha": "head", "state": "open"}
+
+    async def diff(*_args):
+        return "+++ b/a.py\n@@ -1,1 +1,2 @@\n-old\n+changed hunk\n"
+
+    async def retrieve(hunks, *_args):
+        return ([{"hunk": hunks[0][1], "filepath": "a.py",
+                  "matches": [{"similarity": .8, "path": "old.py", "body": "past"}]}], 1)
+
+    async def limited(*_args, **_kwargs):
+        raise GroqRateLimitedError(45)
+
+    checkpoints, posted = [], []
+    async def save(value):
+        checkpoints.append(value)
+    async def post(*_args, **kwargs):
+        posted.append(kwargs)
+        return True
+
+    monkeypatch.setattr(settings, "groq_deferred_max_attempts", 0)
+    monkeypatch.setattr(pr_tasks, "fetch_pr_state", current_head)
+    monkeypatch.setattr(pr_tasks, "fetch_pr_diff", diff)
+    monkeypatch.setattr(pr_tasks, "retrieve_for_hunks", retrieve)
+    monkeypatch.setattr(pr_tasks, "synthesize_feedback", limited)
+    monkeypatch.setattr(pr_tasks, "post_pr_comment", post)
+    result = await pr_tasks._process_pr_async(1, "repo", "owner", "head", save_checkpoint=save)
+    assert result["status"] == "external_failure"
+    assert result["outcome"] == "external_failure"
+    assert checkpoints[-1]["complete"] is False
+    assert posted[0]["partial"] is True
+    assert "recovery budget was exhausted" in posted[0]["analysis_note"]
+
+
+@pytest.mark.asyncio
+async def test_deferred_old_head_never_synthesizes_or_publishes(monkeypatch):
+    async def new_head(*_args):
+        return {"head_sha": "new-head", "state": "open"}
+
+    async def should_not_run(*_args, **_kwargs):
+        raise AssertionError("obsolete deferred task must not continue")
+
+    monkeypatch.setattr(pr_tasks, "fetch_pr_state", new_head)
+    monkeypatch.setattr(pr_tasks, "synthesize_feedback", should_not_run)
+    monkeypatch.setattr(pr_tasks, "post_pr_comment", should_not_run)
+    result = await pr_tasks._process_pr_async(
+        1, "repo", "owner", "old-head",
+        cached_review={"head_sha": "old-head", "complete": False, "synthesis_plan": []},
+    )
+    assert result["status"] == "obsolete"
 
 
 def test_review_task_uses_bounded_retries_and_records_terminal_failure(monkeypatch):

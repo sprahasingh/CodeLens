@@ -1,7 +1,8 @@
 import structlog
 import math
 from typing import List, Dict, Any
-from app.services.llm_client import call_groq_json
+from app.core.config import settings
+from app.services.llm_client import call_groq_json, GroqRateLimitedError, GroqPermanentError
 
 logger = structlog.get_logger()
 
@@ -56,23 +57,37 @@ async def synthesize_feedback(
     hunk: str,
     similar_comments: List[Dict[str, Any]],
     changed_context: str = "",
+    request_context: dict = None,
 ) -> List[Dict[str, Any]]:
     if not similar_comments:
         logger.info("no_comments_to_synthesize")
         return []
 
-    comments_text = "\n".join([
-        f"[{i}] [{c['similarity']:.2f} similarity] {c['body']} (from {c['path']})"
-        for i, c in enumerate(similar_comments)
-    ])
+    # Retrieval order is relevance order. Bound only historical evidence; the
+    # primary hunk remains intact so critical changed code is never truncated.
+    selected_comments = []
+    evidence_chars = 0
+    for comment in similar_comments[:settings.groq_max_evidence_comments_per_group]:
+        line = f"[{len(selected_comments)}] [{float(comment.get('similarity', 0)):.2f} similarity] {comment.get('body', '')} (from {comment.get('path', '')})"
+        remaining = settings.groq_max_evidence_chars_per_group - evidence_chars - (1 if selected_comments else 0)
+        if remaining <= 0:
+            break
+        line = line[:remaining]
+        selected_comments.append((comment, line))
+        evidence_chars += len(line) + 1
+    comments_text = "\n".join(line for _, line in selected_comments)
+    changed_context = changed_context[:settings.groq_max_changed_context_chars]
 
     prompt = SYNTHESIS_PROMPT.format(
         hunk=hunk,
         comments=comments_text,
-        changed_context=changed_context[:12000] or "(No other changed hunk was available.)",
+        changed_context=changed_context or "(No other changed hunk was available.)",
     )
 
-    result = await call_groq_json(prompt)
+    try:
+        result = await call_groq_json(prompt, log_context=request_context)
+    except (GroqRateLimitedError, GroqPermanentError):
+        raise
     if result is None:
         logger.error("synthesis_failed")
         raise GroqSynthesisUnavailable("Groq did not return a synthesis result")
@@ -96,9 +111,9 @@ async def synthesize_feedback(
         if not isinstance(indices, list):
             continue
         sources = [
-            similar_comments[i]
+            selected_comments[i][0]
             for i in indices
-            if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(similar_comments)
+            if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(selected_comments)
         ]
         # A finding with no verified source reference is unsupported output.
         if not sources or not isinstance(evidence, str) or not evidence.strip():

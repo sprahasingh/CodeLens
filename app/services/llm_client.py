@@ -22,6 +22,47 @@ _cooldown_lock = threading.Lock()
 _cooldown_until = 0.0
 
 
+class GroqRateLimitedError(RuntimeError):
+    """A temporary provider limit that should be retried by the task queue."""
+
+    def __init__(self, retry_after_seconds: float, category: str = "rate_limited"):
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
+        self.category = category
+        super().__init__(category)
+
+
+class GroqPermanentError(RuntimeError):
+    """A non-retryable provider rejection; message contains no provider text."""
+
+    def __init__(self, status_code: int, category: str):
+        self.status_code = status_code
+        self.category = category
+        super().__init__(category)
+
+
+def _provider_category(response) -> str:
+    try:
+        error = response.json().get("error", {})
+        code = str(error.get("code", "")).lower()
+        kind = str(error.get("type", "")).lower()
+    except (ValueError, AttributeError, TypeError):
+        code = kind = ""
+    if any(marker in f"{code} {kind}" for marker in ("quota", "billing", "insufficient_quota")):
+        return "quota_exhausted"
+    if any(marker in f"{code} {kind}" for marker in ("auth", "api_key", "permission")):
+        return "authentication_or_permission"
+    return "rate_limited"
+
+
+def _safe_rate_headers(headers) -> dict:
+    allowed = (
+        "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+        "x-ratelimit-reset-requests", "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
+    )
+    return {key: headers[key] for key in allowed if headers.get(key) is not None}
+
+
 def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
     if not value:
         return None
@@ -56,17 +97,24 @@ def _backoff(attempt: int) -> float:
     return random.uniform(0.0, ceiling)
 
 
-async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Dict[str, Any]]:
+async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL, log_context: dict = None) -> Optional[Dict[str, Any]]:
     """Call Groq with bounded retries and free-tier-friendly request pacing.
 
-    A Retry-After value is treated as the minimum wait. If it exceeds the
-    configured retry window, this call stops and a process-local cooldown
-    prevents subsequent hunks from making more requests during that window.
+    Short Retry-After waits are handled in-call. Longer waits are surfaced as
+    GroqRateLimitedError so Celery can defer without tying up its worker.
     """
+    started = time.monotonic()
     remaining = _cooldown_remaining()
     if remaining:
-        logger.warning("groq_cooldown_active", remaining_seconds=round(remaining, 1))
-        return None
+        logger.warning("groq_cooldown_deferred", **{
+            **(log_context or {}), "model": model, "http_status": 429,
+            "provider_error_category": "rate_limited",
+            "retry_after_seconds": round(remaining, 2),
+            "scheduled_delay_seconds": round(remaining, 2),
+            "prompt_token_estimate": (len(prompt) + 3) // 4,
+            "retry_count": 0, "cumulative_retry_seconds": 0.0,
+        })
+        raise GroqRateLimitedError(remaining)
 
     retry_count = settings.groq_max_retries
     timeout = httpx.Timeout(settings.groq_timeout_seconds)
@@ -90,30 +138,37 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
 
                     if response.status_code == 429:
                         retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-                        if retry_after is not None:
-                            _set_cooldown(retry_after)
+                        category = _provider_category(response)
+                        fields = {
+                            **(log_context or {}), "model": model,
+                            "http_status": 429, "provider_error_category": category,
+                            "retry_after_seconds": retry_after,
+                            "rate_limit_headers": _safe_rate_headers(response.headers),
+                            "prompt_token_estimate": (len(prompt) + 3) // 4,
+                            "retry_count": attempt - 1,
+                            "cumulative_retry_seconds": round(time.monotonic() - started, 2),
+                        }
+                        if category in ("quota_exhausted", "authentication_or_permission"):
+                            logger.error("groq_request_permanently_rejected", **fields)
+                            raise GroqPermanentError(429, category)
+                        delay = retry_after if retry_after is not None else settings.groq_rate_limit_cooldown_seconds
+                        _set_cooldown(delay)
+                        if delay > settings.groq_retry_max_seconds:
+                            logger.warning("groq_deferred_rate_limit", **fields, scheduled_delay_seconds=delay)
+                            raise GroqRateLimitedError(delay, category)
                         if attempt > retry_count:
-                            logger.warning("groq_rate_limit_retries_exhausted", attempts=attempt)
-                            _set_cooldown(
-                                retry_after if retry_after is not None
-                                else settings.groq_rate_limit_cooldown_seconds
-                            )
-                            return None
-
-                        wait_cap = settings.groq_retry_max_seconds
-                        if retry_after is not None and retry_after > wait_cap:
-                            logger.warning(
-                                "groq_retry_after_exceeds_window",
-                                retry_after_seconds=round(retry_after, 1),
-                                retry_window_seconds=wait_cap,
-                            )
-                            _set_cooldown(retry_after)
-                            return None
+                            logger.warning("groq_rate_limit_retries_exhausted", **fields)
+                            raise GroqRateLimitedError(delay, category)
                         wait = max(_backoff(attempt), retry_after or 0.0)
                         logger.warning(
                             "groq_rate_limited_retrying",
+                            **(log_context or {}),
+                            model=model,
                             attempt=attempt,
                             wait_seconds=round(wait, 2),
+                            retry_after_seconds=retry_after,
+                            cumulative_retry_seconds=round(time.monotonic() - started + wait, 2),
+                            prompt_token_estimate=(len(prompt) + 3) // 4,
                         )
                         await asyncio.sleep(wait)
                         continue
@@ -131,6 +186,23 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
                         )
                         await asyncio.sleep(wait)
                         continue
+
+                    if response.status_code in (401, 403):
+                        logger.error("groq_request_permanently_rejected", **{
+                            **(log_context or {}), "model": model,
+                            "http_status": response.status_code,
+                            "provider_error_category": "authentication_or_permission",
+                            "prompt_token_estimate": (len(prompt) + 3) // 4,
+                        })
+                        raise GroqPermanentError(response.status_code, "authentication_or_permission")
+                    if 400 <= response.status_code < 500:
+                        logger.error("groq_request_permanently_rejected", **{
+                            **(log_context or {}), "model": model,
+                            "http_status": response.status_code,
+                            "provider_error_category": "invalid_request",
+                            "prompt_token_estimate": (len(prompt) + 3) // 4,
+                        })
+                        raise GroqPermanentError(response.status_code, "invalid_request")
 
                     response.raise_for_status()
                     body = response.json()
@@ -152,7 +224,10 @@ async def call_groq_json(prompt: str, model: str = DEFAULT_MODEL) -> Optional[Di
                     logger.warning("groq_timeout_retrying", attempt=attempt, wait_seconds=round(wait, 2))
                     await asyncio.sleep(wait)
                 except httpx.HTTPStatusError as exc:
-                    logger.error("groq_call_failed", status_code=exc.response.status_code)
+                    logger.error("groq_call_failed", **{
+                        **(log_context or {}), "http_status": exc.response.status_code,
+                        "model": model, "provider_error_category": "http_error",
+                    })
                     return None
                 except httpx.RequestError as exc:
                     if attempt > retry_count:
