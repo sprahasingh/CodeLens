@@ -52,11 +52,19 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run full test suite
         run: python -m pytest -q
-      - name: Set up Buildx for pull request image test
-        if: github.event_name == 'pull_request'
-        uses: docker/setup-buildx-action@v4.3.0
-      - name: Build production image for pull request test only
-        if: github.event_name == 'pull_request'
+
+  image_test:
+    name: Production image test (PR only, no publish)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4.3.0
+      - name: Build production image without publishing
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
@@ -69,7 +77,6 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
       - name: Run full suite inside pull request image
-        if: github.event_name == 'pull_request'
         env:
           IMAGE: codelens:pr-${{ github.sha }}
         run: >-
