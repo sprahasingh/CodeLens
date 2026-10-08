@@ -41,6 +41,8 @@ jobs:
       GROQ_API_KEY: "test-groq-key"
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"
@@ -51,6 +53,46 @@ jobs:
       - name: Run full test suite
         run: python -m pytest -q
 
+  image_test:
+    name: Production image test (PR only, no publish)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4.3.0
+      - name: Build production image without publishing
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: codelens:pr-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Run full suite inside pull request image
+        env:
+          IMAGE: codelens:pr-${{ github.sha }}
+        run: >-
+          docker run --rm --network none
+          --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
+          --env DEBUG=false
+          --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
+          --env REDIS_URL=redis://127.0.0.1:6379/0
+          --env GITHUB_APP_ID=1
+          --env GITHUB_INSTALLATION_ID=1
+          --env GITHUB_PRIVATE_KEY=test-key
+          --env VOYAGE_API_KEY=test-voyage-key
+          --env GROQ_API_KEY=test-groq-key
+          "$IMAGE" python -m pytest -q -p no:cacheprovider -c /tmp/pytest.ini /tmp/codelens-tests
+
   publish:
     needs: test
     if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy')
@@ -60,9 +102,11 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.image.outputs.name }}
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Normalize GHCR image name
         id: image
         shell: bash
@@ -88,6 +132,7 @@ jobs:
         run: >-
           docker run --rm --network none
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
           --env REDIS_URL=redis://127.0.0.1:6379/0
@@ -96,7 +141,7 @@ jobs:
           --env GITHUB_PRIVATE_KEY=test-key
           --env VOYAGE_API_KEY=test-voyage-key
           --env GROQ_API_KEY=test-groq-key
-          "$IMAGE" python -m pytest -q -p no:cacheprovider /tmp/codelens-tests
+          "$IMAGE" python -m pytest -q -p no:cacheprovider -c /tmp/pytest.ini /tmp/codelens-tests
       - uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
@@ -110,20 +155,19 @@ jobs:
             echo "::error::The commit-SHA image tag already exists; refusing to overwrite it."
             exit 1
           fi
-      - name: Build and publish immutable commit image
-        id: build
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Push the exact tested image to GHCR
+        id: push
+        env:
+          LOCAL_IMAGE: codelens:ci-${{ github.sha }}
+          IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker tag "$LOCAL_IMAGE" "$IMAGE"
+          docker push "$IMAGE" 2>&1 | tee "$RUNNER_TEMP/codelens-image-push.log"
+          digest="$(sed -nE 's/.*digest: (sha256:[a-f0-9]{64}).*/\1/p' "$RUNNER_TEMP/codelens-image-push.log" | tail -n 1)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: publish
@@ -138,6 +182,8 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Configure verified SSH host key
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -215,6 +261,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Configure verified SSH host key
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
