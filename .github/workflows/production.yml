@@ -4,12 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       operation:
         description: Production action
         type: choice
-        options: [deploy, deploy_existing, rollback]
+        options: [deploy, deploy_existing, rollback, recover_ssh]
         default: deploy
         required: true
       publication_run_id:
@@ -38,7 +40,9 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy' || inputs.operation == 'deploy_existing'
+    if: >-
+      github.event_name == 'push' || github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.operation == 'deploy' || inputs.operation == 'deploy_existing'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,8 +100,10 @@ jobs:
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
+          --volume "$GITHUB_WORKSPACE/docs/ghcr-deployment.md:/tmp/ghcr-deployment.md:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env CODELENS_DEPLOYMENT_DOC=/tmp/ghcr-deployment.md
           --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
@@ -111,7 +117,10 @@ jobs:
 
   publish:
     needs: test
-    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy')
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -150,8 +159,10 @@ jobs:
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
+          --volume "$GITHUB_WORKSPACE/docs/ghcr-deployment.md:/tmp/ghcr-deployment.md:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env CODELENS_DEPLOYMENT_DOC=/tmp/ghcr-deployment.md
           --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
@@ -228,14 +239,31 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy_existing' && needs.verify_existing.result == 'success') ||
       (github.event_name == 'push' && needs.publish.result == 'success' && vars.CODELENS_AUTO_DEPLOY == 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: production
     permissions:
       contents: read
       packages: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Assume the scoped AWS deployment role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.CODELENS_AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+          audience: sts.amazonaws.com
+          role-session-name: codelens-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+      - name: Authorize this runner's temporary SSH rule
+        id: ssh_access
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: python3 scripts/manage_temporary_ssh.py authorize --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT"
       - name: Configure verified SSH host key
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -304,17 +332,42 @@ jobs:
           host="$EC2_USER@$EC2_HOST"
           ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
           ssh "${ssh_args[@]}" "$host" "rm -f '/tmp/codelens-deploy-${RUN_ID}-${RUN_ATTEMPT}.sh' '/tmp/codelens-compose-${RUN_ID}-${RUN_ATTEMPT}.yml' '/tmp/codelens-ghcr-token-${RUN_ID}-${RUN_ATTEMPT}'" || true
+      - name: Revoke this run's temporary SSH rule
+        if: always() && steps.ssh_access.outputs.ssh_rule_id != ''
+        env:
+          SSH_RULE_ID: ${{ steps.ssh_access.outputs.ssh_rule_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: python3 scripts/manage_temporary_ssh.py revoke --rule-id "$SSH_RULE_ID" --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT"
 
   rollback:
     if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: production
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Assume the scoped AWS deployment role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.CODELENS_AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+          audience: sts.amazonaws.com
+          role-session-name: codelens-rollback-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+      - name: Authorize this runner's temporary SSH rule
+        id: ssh_access
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: python3 scripts/manage_temporary_ssh.py authorize --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT"
       - name: Configure verified SSH host key
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -359,3 +412,38 @@ jobs:
           host="$EC2_USER@$EC2_HOST"
           ssh_args=(-i "$SSH_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
           ssh "${ssh_args[@]}" "$host" "rm -f '/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.sh' '/tmp/codelens-rollback-${RUN_ID}-${RUN_ATTEMPT}.yml'" || true
+      - name: Revoke this run's temporary SSH rule
+        if: always() && steps.ssh_access.outputs.ssh_rule_id != ''
+        env:
+          SSH_RULE_ID: ${{ steps.ssh_access.outputs.ssh_rule_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: python3 scripts/manage_temporary_ssh.py revoke --rule-id "$SSH_RULE_ID" --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT"
+
+  recover_ssh:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch' && inputs.operation == 'recover_ssh'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-ssh-recovery
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Assume the scoped AWS cleanup role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.CODELENS_AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+          audience: sts.amazonaws.com
+          role-session-name: codelens-ssh-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+      - name: Remove expired CodeLens runner SSH rules
+        shell: bash
+        run: python3 scripts/manage_temporary_ssh.py recover-expired

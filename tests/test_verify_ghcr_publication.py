@@ -239,8 +239,9 @@ def test_workflow_existing_mode_is_manual_gated_and_does_not_publish() -> None:
         )
     )
     workflow = workflow_file.read_text()
-    assert "options: [deploy, deploy_existing, rollback]" in workflow
-    assert "if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy' || inputs.operation == 'deploy_existing'" in workflow
+    assert "options: [deploy, deploy_existing, rollback, recover_ssh]" in workflow
+    assert "github.event_name == 'push' || github.event_name == 'pull_request' ||" in workflow
+    assert "inputs.operation == 'deploy' || inputs.operation == 'deploy_existing'" in workflow
     assert "verify_existing:" in workflow
     assert "if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy_existing' && github.ref == 'refs/heads/main'" in workflow
     assert "needs.verify_existing.result == 'success'" in workflow
@@ -250,3 +251,5 @@ def test_workflow_existing_mode_is_manual_gated_and_does_not_publish() -> None:
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "vars.CODELENS_AUTO_DEPLOY == 'true'" in workflow
     assert "  rollback:\n    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback'" in workflow
+    assert "  recover_ssh:" in workflow
+    assert "production-ssh-recovery" in workflow
