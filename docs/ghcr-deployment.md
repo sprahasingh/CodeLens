@@ -49,17 +49,39 @@ deployment helper.
    credentials revoked. Keep the replacement values only in their protected
    provider settings and production `.env`; never paste or print them in Actions
    logs or deployment diagnostics.
-3. On the `main` branch, run Actions → **Test, publish, and deploy CodeLens** →
-   Run workflow → `deploy`. The image is published only after both test runs
-   pass. Approve the `production` environment job only after reviewing the
-   commit and published image digest.
-4. The EC2 helper verifies the digest's embedded source commit and `linux/amd64`
+3. For the already-published first-release image, open Actions → **Test, publish,
+   and deploy CodeLens** → **Run workflow**, select branch `main`, and set:
+   - `operation`: `deploy_existing`
+   - `publication_run_id`: the numeric run ID from the successful publication
+     run's URL (not the UI run number). For the reported run #9, copy the ID from
+     its `/actions/runs/<id>` URL.
+   - `source_commit`:
+     `b3c7a3cc74336272b907c10eb32ca874aaa908cb`
+   - `image_digest`:
+     `sha256:c2da031dca76bccab86e95b05a469048dc876d926c5ba978a0e0e41fba7b2e3a`
+   The verification job checks that this is a successful main publication from
+   this workflow, that its test and image-publish steps succeeded, that the
+   commit tag resolves to the supplied immutable digest, and that the image
+   config identifies the same source commit and `linux/amd64`. It reads registry
+   manifests/config only; it does not pull, rebuild, or republish the image.
+4. The `deploy_existing` mode runs the current workflow's tests and then the
+   verifier. It skips the publisher, so it cannot collide with or overwrite the
+   source commit tag. The existing `deploy` mode remains for a newly unpublished
+   main commit: it tests, builds, publishes, and deploys that same run's digest.
+5. Confirm the `production` environment has a required reviewer. Approve the
+   deployment job only after checking the source commit and digest in the run.
+   Keep `CODELENS_AUTO_DEPLOY` absent or `false`.
+6. Immediately before approval, confirm the deployment's Celery gate is clear:
+   active, reserved, scheduled, unacknowledged, and unacknowledged-index counts
+   must all be zero. If inspection is unavailable or any count is nonzero, the
+   helper aborts before changing services.
+7. The EC2 helper verifies the digest's embedded source commit and `linux/amd64`
    platform, checks free space and inodes, and requires the worker to report no
    active, reserved, scheduled, or unacknowledged Celery deliveries. If any
    inspection is unavailable or work remains in flight, it stops without
    changing services. Ready messages may remain queued in Redis; the worker
    consumes them after restart.
-5. The helper tags each current service image by its exact image ID, pulls the
+8. The helper tags each current service image by its exact image ID, pulls the
    GHCR digest once, checks post-pull headroom, and updates only `web`, `worker`,
    and `flower` in project `codelens`. It checks local and public FastAPI health,
    Celery worker health and ping, and Flower reachability. Failure triggers an
