@@ -39,13 +39,16 @@ deployment helper.
 ## First controlled deployment
 
 1. Do not proceed while the root filesystem has less than **1536 MiB free**.
-   The latest read-only check showed about **500 MiB free**, so the helper will
-   stop before creating rollback tags or pulling an image. The first GHCR image
-   can require roughly the current 672 MB uncompressed application-image size,
-   plus pull/unpack overhead; the helper also requires at least 300 MiB to remain
-   after pulling. It does not prune images or volumes to create space.
-2. Resolve the exposed local environment credentials noted in the deployment
-   preparation report before starting the workflow.
+   The EC2 EBS volume was expanded to **12 GiB** and the root filesystem was
+   grown online. A subsequent check showed about **4.37 GiB free** (the exact
+   amount changes as Docker images and logs grow). The helper still checks the
+   live free space and inodes before changing anything; it requires 1536 MiB
+   before a pull and at least 300 MiB after it. It does not prune images or
+   volumes to create space.
+2. The previously exposed credential categories have been rotated and the old
+   credentials revoked. Keep the replacement values only in their protected
+   provider settings and production `.env`; never paste or print them in Actions
+   logs or deployment diagnostics.
 3. On the `main` branch, run Actions → **Test, publish, and deploy CodeLens** →
    Run workflow → `deploy`. The image is published only after both test runs
    pass. Approve the `production` environment job only after reviewing the
@@ -64,8 +67,10 @@ deployment helper.
 
 The short-lived GHCR token is transferred over the verified SSH connection,
 stored temporarily with mode `0600`, used through Docker's `--password-stdin`,
-and removed. Docker credentials use a temporary `DOCKER_CONFIG` and are removed
-when the helper exits.
+and removed. Docker credentials use a temporary mode-`0700` `DOCKER_CONFIG` and
+are removed when the helper exits, including failure and handled-signal paths.
+Authentication, pull, task-inspection, and Compose errors are reported using
+fixed sanitized messages; raw command output is not forwarded to Actions logs.
 
 ## Rollback
 
