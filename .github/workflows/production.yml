@@ -9,9 +9,21 @@ on:
       operation:
         description: Production action
         type: choice
-        options: [deploy, rollback]
+        options: [deploy, deploy_existing, rollback]
         default: deploy
         required: true
+      publication_run_id:
+        description: Successful main publication run for deploy_existing
+        type: string
+        required: false
+      source_commit:
+        description: Full source commit SHA for deploy_existing
+        type: string
+        required: false
+      image_digest:
+        description: Published sha256 digest for deploy_existing (digest only)
+        type: string
+        required: false
       rollback_run_id:
         description: Optional saved deployment id for rollback; blank selects latest
         type: string
@@ -26,7 +38,7 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy' || inputs.operation == 'deploy_existing'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -83,7 +95,10 @@ jobs:
           docker run --rm --network none
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
+          --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
+          --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
           --env REDIS_URL=redis://127.0.0.1:6379/0
@@ -134,7 +149,10 @@ jobs:
           docker run --rm --network none
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
+          --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
+          --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
           --env REDIS_URL=redis://127.0.0.1:6379/0
@@ -171,12 +189,44 @@ jobs:
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+  verify_existing:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy_existing' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.verify.outputs.image }}
+      source_commit: ${{ steps.verify.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify prior tested publication and immutable digest
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_ghcr_publication.py \
+            --publication-run-id "$PUBLICATION_RUN_ID" \
+            --source-commit "$SOURCE_COMMIT" \
+            --image-digest "$IMAGE_DIGEST"
+
   deploy:
-    needs: publish
+    needs: [publish, verify_existing]
     if: >-
-      github.ref == 'refs/heads/main' && needs.publish.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy') ||
-      (github.event_name == 'push' && vars.CODELENS_AUTO_DEPLOY == 'true'))
+      always() && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy' && needs.publish.result == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy_existing' && needs.verify_existing.result == 'success') ||
+      (github.event_name == 'push' && needs.publish.result == 'success' && vars.CODELENS_AUTO_DEPLOY == 'true'))
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -227,8 +277,8 @@ jobs:
           echo "ssh_known_hosts=$SSH_DIR/known_hosts" >> "$GITHUB_ENV"
       - name: Deploy exact published image digest
         env:
-          IMAGE: ${{ needs.publish.outputs.image }}@${{ needs.publish.outputs.digest }}
-          EXPECTED_SHA: ${{ github.sha }}
+          IMAGE: ${{ inputs.operation == 'deploy_existing' && needs.verify_existing.outputs.image || format('{0}@{1}', needs.publish.outputs.image, needs.publish.outputs.digest) }}
+          EXPECTED_SHA: ${{ inputs.operation == 'deploy_existing' && needs.verify_existing.outputs.source_commit || github.sha }}
           GHCR_USERNAME: ${{ github.actor }}
         shell: bash
         run: |
