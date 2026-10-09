@@ -82,6 +82,7 @@ jobs:
         run: >-
           docker run --rm --network none
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
@@ -132,6 +133,7 @@ jobs:
         run: >-
           docker run --rm --network none
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
+          --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
