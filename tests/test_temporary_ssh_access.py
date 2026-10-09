@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 import textwrap
@@ -259,7 +260,10 @@ def test_unique_run_ids_keep_concurrent_runs_from_reclaiming_each_others_rules(
 
 def test_workflow_limits_aws_oidc_to_deployment_jobs_and_has_recovery() -> None:
     root = Path(__file__).resolve().parents[1]
-    workflow = (root / ".github/workflows/production.yml").read_text()
+    workflow_path = Path(
+        os.environ.get("CODELENS_WORKFLOW_FILE", root / ".github/workflows/production.yml")
+    )
+    workflow = workflow_path.read_text()
     assert "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd" in workflow
     assert "schedule:" in workflow and "recover_ssh:" in workflow
     assert "cancel-in-progress: false" in workflow
@@ -300,7 +304,10 @@ def test_workflow_limits_aws_oidc_to_deployment_jobs_and_has_recovery() -> None:
 
 def test_documented_iam_policy_matches_helper_aws_calls() -> None:
     root = Path(__file__).resolve().parents[1]
-    documentation = (root / "docs/ghcr-deployment.md").read_text()
+    documentation_path = Path(
+        os.environ.get("CODELENS_DEPLOYMENT_DOC", root / "docs/ghcr-deployment.md")
+    )
+    documentation = documentation_path.read_text()
     policy_section = documentation.split("### IAM permissions policy", 1)[1].split(
         "AWS authorizes ingress", 1
     )[0]

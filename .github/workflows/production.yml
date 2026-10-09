@@ -100,8 +100,10 @@ jobs:
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
+          --volume "$GITHUB_WORKSPACE/docs/ghcr-deployment.md:/tmp/ghcr-deployment.md:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env CODELENS_DEPLOYMENT_DOC=/tmp/ghcr-deployment.md
           --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
@@ -157,8 +159,10 @@ jobs:
           --volume "$GITHUB_WORKSPACE/tests:/tmp/codelens-tests:ro"
           --volume "$GITHUB_WORKSPACE/scripts:/tmp/scripts:ro"
           --volume "$GITHUB_WORKSPACE/.github/workflows/production.yml:/tmp/production.yml:ro"
+          --volume "$GITHUB_WORKSPACE/docs/ghcr-deployment.md:/tmp/ghcr-deployment.md:ro"
           --volume "$GITHUB_WORKSPACE/pytest.ini:/tmp/pytest.ini:ro"
           --env CODELENS_WORKFLOW_FILE=/tmp/production.yml
+          --env CODELENS_DEPLOYMENT_DOC=/tmp/ghcr-deployment.md
           --env PYTHONPATH=/tmp
           --env DEBUG=false
           --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1/test
