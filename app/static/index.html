@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>CodeLens | AI-Powered GitHub PR Reviews</title>
+  <meta name="author" content="Spraha Singh" />
   <meta name="description" content="CodeLens is an AI-powered GitHub pull request review assistant that uses Retrieval-Augmented Generation (RAG) and historical review comments to generate context-aware, actionable code review feedback." />
   <link rel="canonical" href="https://13-51-158-45.sslip.io/" />
   <meta property="og:title" content="CodeLens | AI-Powered GitHub PR Reviews" />
@@ -573,6 +574,22 @@
       color: var(--text-3);
       font-family: var(--mono);
     }
+    .footer-copy a {
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 3px;
+      transition: color 0.15s, text-decoration-color 0.15s;
+    }
+    .footer-copy a:hover {
+      color: var(--text);
+      text-decoration-color: currentColor;
+    }
+    .footer-copy a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 2px;
+    }
     .footer-links {
       display: flex;
       gap: 20px;
@@ -851,7 +868,7 @@
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <span class="footer-copy">CodeLens · Built with Voyage AI, pgvector, Groq</span>
+      <span class="footer-copy">© 2026 CodeLens. Built by <a href="https://github.com/sprahasingh" target="_blank" rel="noopener noreferrer">Spraha Singh</a>.</span>
       <ul class="footer-links">
         <li><a href="https://github.com" target="_blank" rel="noopener">GitHub</a></li>
         <li><a href="/health">Status</a></li>
