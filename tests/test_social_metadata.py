@@ -7,8 +7,22 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HTML_PATH = ROOT / "app" / "static" / "index.html"
-IMAGE_PATH = ROOT / "app" / "static" / "codelens-social-preview.png"
+
+
+def find_static_dir() -> Path:
+    # The production-image job mounts tests at /tmp/codelens-tests, while the
+    # application assets stay inside the image at /app/app/static.
+    candidates = (
+        ROOT / "app" / "static",
+        Path.cwd() / "app" / "static",
+        Path("/app/app/static"),
+    )
+    return next(path for path in candidates if path.is_dir())
+
+
+STATIC_DIR = find_static_dir()
+HTML_PATH = STATIC_DIR / "index.html"
+IMAGE_PATH = STATIC_DIR / "codelens-social-preview.png"
 DESCRIPTION = (
     "CodeLens is an AI-powered GitHub pull request review assistant that uses "
     "Retrieval-Augmented Generation (RAG) and historical review comments to "
