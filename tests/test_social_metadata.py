@@ -5,7 +5,6 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -59,6 +58,29 @@ class HeadMetadataParser(HTMLParser):
         if tag == "head":
             self.in_head = False
 
+
+class FooterParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_footer_copy = False
+        self.copy_text: list[str] = []
+        self.author_link: dict[str, str | None] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "span" and "footer-copy" in (attributes.get("class") or "").split():
+            self.in_footer_copy = True
+        elif tag == "a" and self.in_footer_copy and attributes.get("href") == "https://github.com/sprahasingh":
+            self.author_link = attributes
+
+    def handle_data(self, data: str) -> None:
+        if self.in_footer_copy:
+            self.copy_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "span" and self.in_footer_copy:
+            self.in_footer_copy = False
+
 def test_initial_html_has_fixed_social_metadata() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
     parser = HeadMetadataParser()
@@ -66,6 +88,7 @@ def test_initial_html_has_fixed_social_metadata() -> None:
     metadata = parser.metadata
 
     assert f"<title>{TITLE}</title>" in html
+    assert metadata[("name", "author")] == ["Spraha Singh"]
     assert metadata[("name", "description")] == [DESCRIPTION]
     assert metadata[("property", "og:title")] == [TITLE]
     assert metadata[("property", "og:description")] == [DESCRIPTION]
@@ -81,6 +104,32 @@ def test_initial_html_has_fixed_social_metadata() -> None:
     assert metadata[("name", "twitter:image")] == [IMAGE_URL]
     assert parser.canonical_urls == [PRODUCTION_URL]
     assert "similar past patterns matched" not in html.split("</head>", 1)[0]
+
+
+def test_homepage_response_includes_metadata_and_footer_at_initial_load() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    response = TestClient(app).get("/")
+    assert response.status_code == 200
+
+    metadata_parser = HeadMetadataParser()
+    metadata_parser.feed(response.text)
+    assert metadata_parser.metadata[("name", "author")] == ["Spraha Singh"]
+    assert metadata_parser.metadata[("property", "og:type")] == ["website"]
+    assert metadata_parser.metadata[("property", "og:title")] == [TITLE]
+    assert metadata_parser.metadata[("property", "og:description")] == [DESCRIPTION]
+    assert metadata_parser.metadata[("property", "og:image")] == [IMAGE_URL]
+    assert metadata_parser.canonical_urls == [PRODUCTION_URL]
+
+    footer_parser = FooterParser()
+    footer_parser.feed(response.text)
+    assert "".join(footer_parser.copy_text) == "© 2026 CodeLens. Built by Spraha Singh."
+    assert footer_parser.author_link is not None
+    assert footer_parser.author_link.get("target") == "_blank"
+    assert set((footer_parser.author_link.get("rel") or "").split()) == {"noopener", "noreferrer"}
+    assert "CodeLens · Built with Voyage AI, pgvector, Groq" not in response.text
 
 
 def test_social_preview_is_a_1200_by_630_png() -> None:
